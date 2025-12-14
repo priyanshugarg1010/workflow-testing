@@ -106,7 +106,7 @@ $ENTRY" change.md
 $ENTRY" change.md
           fi
 
-      - name: Commit change changes
+      - name: Create PR branch and commit
         id: commit_changes
         run: |
           git add change.md
@@ -114,14 +114,24 @@ $ENTRY" change.md
             echo "No changes to commit"
             echo "has_changes=false" >> $GITHUB_OUTPUT
           else
+            BRANCH="changelog-update-pr-${{ steps.pr_info.outputs.pr_number }}"
+            git checkout -b "$BRANCH"
             git commit -m "docs: update change for PR #${{ steps.pr_info.outputs.pr_number }}
             
             Auto-generated change entry for merged PR."
-            git push origin main
+            git push origin "$BRANCH"
             echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "branch=$BRANCH" >> $GITHUB_OUTPUT
           fi
 
-      - name: Commit complete
+      - name: Create Pull Request
         if: steps.commit_changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "change updated in main branch."
+          gh pr create \
+            --base main \
+            --head "${{ steps.commit_changes.outputs.branch }}" \
+            --title "docs: update changelog for PR #${{ steps.pr_info.outputs.pr_number }}" \
+            --body "Auto-generated changelog update for merged PR #${{ steps.pr_info.outputs.pr_number }}\n\nOriginal PR: ${{ steps.pr_info.outputs.pr_url }}" \
+            --reviewer "${{ steps.pr_info.outputs.pr_author }}"
