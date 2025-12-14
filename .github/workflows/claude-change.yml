@@ -1,0 +1,127 @@
+# .github/workflows/update-change.yml
+name: Update change on PR Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - stable
+
+jobs:
+  update-change:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Setup Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: stable
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "[bot] Update change"
+          git config user.email "<>"
+
+      - name: Extract PR Information
+        id: pr_info
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          
+          # Extract type from PR title (format: "type: description" or "[type] description")
+          TYPE=$(echo "$PR_TITLE" | grep -oP '^(\[)?[a-zA-Z]+(?=(\]|:))' | tr -d '[]' || echo "change")
+          
+          # Extract labels if they indicate breaking changes
+          LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
+          IS_BREAKING=$(echo "$LABELS" | grep -i "breaking" && echo "true" || echo "false")
+          
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "pr_title=$PR_TITLE" >> $GITHUB_OUTPUT
+          echo "pr_author=$PR_AUTHOR" >> $GITHUB_OUTPUT
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
+          echo "is_breaking=$IS_BREAKING" >> $GITHUB_OUTPUT
+
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Update change.md
+        run: |
+          TYPE="${{ steps.pr_info.outputs.type }}"
+          PR_NUMBER="${{ steps.pr_info.outputs.pr_number }}"
+          PR_TITLE="${{ steps.pr_info.outputs.pr_title }}"
+          PR_AUTHOR="${{ steps.pr_info.outputs.pr_author }}"
+          PR_URL="${{ steps.pr_info.outputs.pr_url }}"
+          DATE="${{ steps.date.outputs.date }}"
+          IS_BREAKING="${{ steps.pr_info.outputs.is_breaking }}"
+          
+          # Format the type with uppercase first letter
+          TYPE_FORMATTED=$(echo "$TYPE" | sed 's/\b\(.\)/\u\1/')
+          
+          # Add breaking change indicator if applicable
+          if [ "$IS_BREAKING" = "true" ]; then
+            ENTRY="- **${TYPE_FORMATTED}** ⚠️ **BREAKING**: ${PR_TITLE} ([#${PR_NUMBER}](${PR_URL})) - @${PR_AUTHOR}"
+          else
+            ENTRY="- **${TYPE_FORMATTED}**: ${PR_TITLE} ([#${PR_NUMBER}](${PR_URL})) - @${PR_AUTHOR}"
+          fi
+          
+          # Create change.md if it doesn't exist
+          if [ ! -f change.md ]; then
+            cat > change.md << 'EOL'
+# change
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a change](https://keepachange.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+EOL
+          fi
+          
+          # Check if there's an "Unreleased" section
+          if grep -q "## \[Unreleased\]" change.md; then
+            # Find the line number of [Unreleased] and add entry after it
+            LINE_NUM=$(grep -n "## \[Unreleased\]" change.md | cut -d: -f1)
+            # Add blank line if there isn't one
+            sed -i "${LINE_NUM}a\\
+\\
+$ENTRY" change.md
+          else
+            # Add Unreleased section with the entry after the header
+            sed -i "/# change/a\\
+\\
+## [Unreleased]\\
+\\
+$ENTRY" change.md
+          fi
+
+      - name: Commit change changes
+        id: commit_changes
+        run: |
+          git add change.md
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            git commit -m "docs: update change for PR #${{ steps.pr_info.outputs.pr_number }}
+            
+            Auto-generated change entry for merged PR."
+            git push origin stable
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger sync to master
+        if: steps.commit_changes.outputs.has_changes == 'true'
+        run: |
+          echo "change updated in stable branch. The sync workflow will handle merging to master."
