@@ -5,7 +5,7 @@ on:
   pull_request:
     types: [closed]
     branches:
-      - stable
+      - main
 
 jobs:
   update-change:
@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
-          ref: stable
+          ref: main
           fetch-depth: 0
 
       - name: Configure git
@@ -117,11 +117,11 @@ $ENTRY" change.md
             git commit -m "docs: update change for PR #${{ steps.pr_info.outputs.pr_number }}
             
             Auto-generated change entry for merged PR."
-            git push origin stable
+            git push origin main
             echo "has_changes=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Trigger sync to master
+      - name: Commit complete
         if: steps.commit_changes.outputs.has_changes == 'true'
         run: |
-          echo "change updated in stable branch. The sync workflow will handle merging to master."
+          echo "change updated in main branch."

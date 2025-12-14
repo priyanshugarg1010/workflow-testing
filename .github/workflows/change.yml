@@ -3,7 +3,7 @@ name: Update release on PR merge
 on:
   pull_request:
     types: [closed]
-    branches: [master]
+    branches: [main]
 
 jobs:
   update-release:
@@ -14,10 +14,10 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Checkout master
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: main
           fetch-depth: 0
 
       - name: Configure git
@@ -82,7 +82,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh pr create \
-            --base master \
+            --base main \
             --head "$BRANCH" \
             --title "Update release from PR #${{ env.NUMBER }}" \
             --body "Auto-generated release update for merged PR #${{ env.NUMBER }}" \
