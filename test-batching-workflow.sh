@@ -71,48 +71,68 @@ except FileNotFoundError:
 # Reverse to show newest first
 pr_entries.reverse()
 
-# Build the new version section
-new_section = f"### [{current_version}]({current_pr_url})\n"
-if pr_entries:
-    new_section += "\n".join(pr_entries) + "\n"
+# Extract major.minor for the version label
+major_minor = '.'.join(current_version.split('.')[:2])
 
 # Check if this is a new major.minor version
 if is_new_version == 'true':
-    # Create a new version heading
-    major_minor = '.'.join(current_version.split('.')[:2])
-    version_heading = f"## Version {major_minor}\n\n"
+    # Create NEW version section with heading format: ### [version](url) Version X.Y
+    new_section = f"### [{current_version}]({current_pr_url}) Version {major_minor}\n"
+    if pr_entries:
+        new_section += "\n".join(pr_entries) + "\n"
     
     # Check if we already have content
     if content.strip() == "# Changelog":
         # First release
-        content = f"# Changelog\n\n{version_heading}{new_section}\n"
+        content = f"# Changelog\n\n{new_section}\n"
     else:
         # Insert after the title
         content = re.sub(
             r'(# Changelog\s*\n)',
-            r'\1\n' + version_heading + new_section + '\n',
+            r'\1\n' + new_section + '\n',
             content,
             count=1
         )
 else:
-    # Same major.minor version - add to existing section
-    major_minor = '.'.join(current_version.split('.')[:2])
-    version_heading = f"## Version {major_minor}"
+    # Same major.minor version - UPDATE existing section
+    # Find the existing version section heading
+    version_pattern = rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}'
     
-    # Find the version heading and add the new section after it
-    pattern = re.escape(version_heading) + r'(\s*\n)'
-    if re.search(pattern, content):
+    if re.search(version_pattern, content):
+        # Extract existing PRs from the section
+        section_match = re.search(
+            rf'(### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}\n)((?:- \[.*?\n)*)',
+            content
+        )
+        
+        existing_prs = []
+        if section_match and section_match.group(2):
+            existing_prs = section_match.group(2).strip().split('\n')
+        
+        # Combine existing PRs with new PRs
+        all_prs = pr_entries + existing_prs
+        
+        # Build updated section with new version link and all PRs
+        updated_section = f"### [{current_version}]({current_pr_url}) Version {major_minor}\n"
+        if all_prs:
+            updated_section += "\n".join(all_prs) + "\n"
+        
+        # Replace the old section with updated one
         content = re.sub(
-            pattern,
-            version_heading + r'\1\n' + new_section + '\n',
+            rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}\n(?:- \[.*?\n)*',
+            updated_section,
             content,
             count=1
         )
     else:
-        # Version heading doesn't exist, create it
+        # Version section doesn't exist, create it
+        new_section = f"### [{current_version}]({current_pr_url}) Version {major_minor}\n"
+        if pr_entries:
+            new_section += "\n".join(pr_entries) + "\n"
+        
         content = re.sub(
             r'(# Changelog\s*\n)',
-            r'\1\n' + version_heading + '\n\n' + new_section + '\n',
+            r'\1\n' + new_section + '\n',
             content,
             count=1
         )
