@@ -99,34 +99,85 @@ jobs:
           echo "previous_pr=$PREVIOUS_RELEASE_PR" >> $GITHUB_OUTPUT
           echo "previous_version=$PREVIOUS_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Collect PRs between releases
+      - name: Collect PRs for this version
         id: prs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           CURRENT_PR_NUMBER="${{ steps.current.outputs.number }}"
-          PREVIOUS_PR_NUMBER="${{ steps.collect.outputs.previous_pr }}"
+          CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
+          IS_NEW_VERSION="${{ steps.collect.outputs.is_new_version }}"
           
-          echo "Collecting PRs between #$PREVIOUS_PR_NUMBER and #$CURRENT_PR_NUMBER..."
+          echo "Collecting PRs for version $CURRENT_MAJOR_MINOR..."
           
-          # Get all PRs between previous and current release
-          PR_LIST=""
+          # If this is a NEW version, only get PRs since last release
+          # If SAME version, get ALL PRs for this version from the beginning
           
-          if [ -n "$PREVIOUS_PR_NUMBER" ]; then
-            gh pr list \
-              --state merged \
-              --base main \
-              --limit 500 \
-              --json number,title,url \
-              --jq '.[] | select(.number > '$PREVIOUS_PR_NUMBER' and .number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > between_prs.txt
+          if [ "$IS_NEW_VERSION" = "true" ]; then
+            # NEW VERSION: Get PRs between last release and current
+            PREVIOUS_PR_NUMBER="${{ steps.collect.outputs.previous_pr }}"
+            echo "New version - collecting PRs since #$PREVIOUS_PR_NUMBER"
+            
+            if [ -n "$PREVIOUS_PR_NUMBER" ]; then
+              gh pr list \
+                --state merged \
+                --base main \
+                --limit 500 \
+                --json number,title,url \
+                --jq '.[] | select(.number > '$PREVIOUS_PR_NUMBER' and .number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > between_prs.txt
+            else
+              # First release ever
+              gh pr list \
+                --state merged \
+                --base main \
+                --limit 500 \
+                --json number,title,url \
+                --jq '.[] | select(.number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > between_prs.txt
+            fi
           else
-            # No previous release, get all PRs before current
+            # SAME VERSION: Need to get ALL PRs for this entire version family
+            echo "Same version - collecting ALL PRs for version $CURRENT_MAJOR_MINOR"
+            
+            # Find the FIRST release PR for this major.minor version
+            FIRST_RELEASE_PR=""
             gh pr list \
               --state merged \
               --base main \
               --limit 500 \
-              --json number,title,url \
-              --jq '.[] | select(.number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > between_prs.txt
+              --json number,title,mergedAt \
+              --jq 'sort_by(.mergedAt) | .[] | "\(.number)|\(.title)"' > all_prs.txt
+            
+            while IFS='|' read -r pr_num pr_title; do
+              if [[ "$pr_title" =~ ^[Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]] && ! [[ "$pr_title" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
+                VERSION=$(echo "$pr_title" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
+                MAJOR_MINOR=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+                
+                if [ "$MAJOR_MINOR" = "$CURRENT_MAJOR_MINOR" ]; then
+                  FIRST_RELEASE_PR="$pr_num"
+                  echo "Found first release for $CURRENT_MAJOR_MINOR: PR #$FIRST_RELEASE_PR"
+                  break
+                fi
+              fi
+            done < all_prs.txt
+            
+            # Get all PRs from first release of this version to current
+            if [ -n "$FIRST_RELEASE_PR" ]; then
+              gh pr list \
+                --state merged \
+                --base main \
+                --limit 500 \
+                --json number,title,url \
+                --jq '.[] | select(.number > '$FIRST_RELEASE_PR' and .number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > between_prs.txt
+            else
+              # Fallback: get PRs from last release
+              PREVIOUS_PR_NUMBER="${{ steps.collect.outputs.previous_pr }}"
+              gh pr list \
+                --state merged \
+                --base main \
+                --limit 500 \
+                --json number,title,url \
+                --jq '.[] | select(.number > '$PREVIOUS_PR_NUMBER' and .number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > between_prs.txt
+            fi
           fi
           
           # Filter out internal PRs and collect normal PRs
@@ -147,7 +198,7 @@ jobs:
             if [ -z "$NORMAL_PRS" ]; then
               NORMAL_PRS="$pr_num|$pr_title|$pr_url"
             else
-              NORMAL_PRS="${NORMAL_PRS}{pr_num}|${pr_title}|${pr_url}"
+              NORMAL_PRS="${NORMAL_PRS}${pr_num}|${pr_title}|${pr_url}"
             fi
           done < between_prs.txt
           
@@ -234,30 +285,17 @@ jobs:
                       count=1
                   )
           else:
-              # Same major.minor version - UPDATE existing section
-              # Find the existing version section heading
+              # Same major.minor version - REPLACE existing section with updated data
+              # The workflow already collected ALL PRs for this version, so just replace
               version_pattern = rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}'
               
+              # Build the updated section with all PRs
+              updated_section = f"### [{current_version}]({current_pr_url}) Version {major_minor}\n"
+              if pr_entries:
+                  updated_section += "\n".join(pr_entries) + "\n"
+              
               if re.search(version_pattern, content):
-                  # Extract existing PRs from the section
-                  section_match = re.search(
-                      rf'(### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}\n)((?:- \[.*?\n)*)',
-                      content
-                  )
-                  
-                  existing_prs = []
-                  if section_match and section_match.group(2):
-                      existing_prs = section_match.group(2).strip().split('\n')
-                  
-                  # Combine existing PRs with new PRs
-                  all_prs = pr_entries + existing_prs
-                  
-                  # Build updated section with new version link and all PRs
-                  updated_section = f"### [{current_version}]({current_pr_url}) Version {major_minor}\n"
-                  if all_prs:
-                      updated_section += "\n".join(all_prs) + "\n"
-                  
-                  # Replace the old section with updated one
+                  # Replace the existing section completely
                   content = re.sub(
                       rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}\n(?:- \[.*?\n)*',
                       updated_section,
@@ -266,13 +304,9 @@ jobs:
                   )
               else:
                   # Version section doesn't exist, create it
-                  new_section = f"### [{current_version}]({current_pr_url}) Version {major_minor}\n"
-                  if pr_entries:
-                      new_section += "\n".join(pr_entries) + "\n"
-                  
                   content = re.sub(
                       r'(# Changelog\s*\n)',
-                      r'\1\n' + new_section + '\n',
+                      r'\1\n' + updated_section + '\n',
                       content,
                       count=1
                   )
