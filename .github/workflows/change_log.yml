@@ -1,0 +1,100 @@
+name: Update release on PR merge
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  update-changelog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "[bot] Release Updater"
+          git config user.email "release-bot@github.com"
+
+      - name: Get merged PR info
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_JSON=$(gh pr list --state merged --base main --limit 1 --json title,number,url)
+          TITLE=$(echo "$PR_JSON" | jq -r '.[0].title')
+          NUMBER=$(echo "$PR_JSON" | jq -r '.[0].number')
+          URL=$(echo "$PR_JSON" | jq -r '.[0].url')
+
+          echo "TITLE=$TITLE" >> $GITHUB_ENV
+          echo "NUMBER=$NUMBER" >> $GITHUB_ENV
+          echo "URL=$URL" >> $GITHUB_ENV
+
+      - name: Update change_log.md
+        run: |
+          TITLE="${TITLE}"
+          FILE="change_log.md"
+
+          # Ensure file exists
+          if [ ! -f "$FILE" ]; then
+            echo -e "## Latest Release\n" > "$FILE"
+          fi
+
+          # Ignore Internal PRs (any case)
+          if [[ "$TITLE" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
+            echo "Ignoring internal PR"
+            exit 0
+          fi
+
+          # Handle Release build PR
+          if [[ "$TITLE" =~ ^[Rr]elease\ build\ ([0-9.+]+) ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+
+            awk -v version="$VERSION" '
+              BEGIN { in_latest=0 }
+              /^## Latest Release/ {
+                print "## " version
+                in_latest=1
+                next
+              }
+              /^## / && in_latest {
+                in_latest=0
+                print "\n## Latest Release\n"
+              }
+              {
+                if (in_latest) print
+              }
+            ' "$FILE" > tmp.md
+
+            mv tmp.md "$FILE"
+            exit 0
+          fi
+
+          # Normal PR → append under Latest Release
+          ENTRY="- ${TITLE} ([#${NUMBER}](${URL}))"
+
+          awk -v entry="$ENTRY" '
+            BEGIN { added=0 }
+            {
+              print
+              if ($0 == "## Latest Release" && !added) {
+                print entry
+                added=1
+              }
+            }
+          ' "$FILE" > tmp.md
+
+          mv tmp.md "$FILE"
+
+      - name: Commit and push changes
+        run: |
+          git add change_log.md
+          git commit -m "chore(changelog): update from PR #${NUMBER}" || exit 0
+          git push
