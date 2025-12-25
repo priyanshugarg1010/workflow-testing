@@ -1,0 +1,151 @@
+name: Update CHANGELOG on PR merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  update-changelog:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "[bot] Changelog Updater"
+          git config user.email "changelog-bot@github.com"
+
+      - name: Extract PR details
+        id: pr
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          NUMBER="${{ github.event.pull_request.number }}"
+          URL="${{ github.event.pull_request.html_url }}"
+          
+          echo "title=$TITLE" >> $GITHUB_OUTPUT
+          echo "number=$NUMBER" >> $GITHUB_OUTPUT
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          
+          # Check if PR should be ignored (starts with "internal" - case insensitive)
+          if [[ "$TITLE" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
+            echo "should_skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_skip=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Check if PR is a release (starts with "release" - case insensitive)
+          if [[ "$TITLE" =~ ^[Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]]; then
+            echo "is_release=true" >> $GITHUB_OUTPUT
+            # Extract version number (e.g., "Release Build 2.2154.009+3467" -> "2.2154.009+3467")
+            VERSION=$(echo "$TITLE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "is_release=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update CHANGELOG.md
+        if: steps.pr.outputs.should_skip == 'false'
+        run: |
+          TITLE="${{ steps.pr.outputs.title }}"
+          NUMBER="${{ steps.pr.outputs.number }}"
+          URL="${{ steps.pr.outputs.url }}"
+          IS_RELEASE="${{ steps.pr.outputs.is_release }}"
+          VERSION="${{ steps.pr.outputs.version }}"
+          
+          # Create CHANGELOG.md if it doesn't exist
+          if [ ! -f CHANGELOG.md ]; then
+            echo "# Changelog" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "## Latest Release" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+          fi
+          
+          # Process based on PR type
+          if [ "$IS_RELEASE" = "true" ]; then
+            # This is a release PR - create new version section
+            python3 << 'PYTHON_SCRIPT'
+          import re
+          import sys
+          
+          version = "$VERSION"
+          pr_number = "$NUMBER"
+          pr_url = "$URL"
+          
+          with open('CHANGELOG.md', 'r') as f:
+              content = f.read()
+          
+          # Replace "Latest Release" with the new version
+          # Find the "Latest Release" section and rename it
+          new_section = f"### [{version}]({pr_url})"
+          content = re.sub(
+              r'## Latest Release',
+              f'## Latest Release\n\n{new_section}',
+              content,
+              count=1
+          )
+          
+          with open('CHANGELOG.md', 'w') as f:
+              f.write(content)
+          PYTHON_SCRIPT
+          else
+            # This is a normal PR - add to Latest Release section
+            python3 << 'PYTHON_SCRIPT'
+          import re
+          
+          title = """$TITLE"""
+          pr_number = "$NUMBER"
+          pr_url = "$URL"
+          repo = "${{ github.repository }}"
+          
+          with open('CHANGELOG.md', 'r') as f:
+              content = f.read()
+          
+          # Create the PR entry in the format: - [owner/repo#number](url) Title
+          pr_entry = f"- [{repo}#{pr_number}]({pr_url}) {title}"
+          
+          # Find the "Latest Release" section and add the entry after it
+          # Look for the pattern "## Latest Release" followed by optional whitespace
+          pattern = r'(## Latest Release\s*\n)'
+          
+          if re.search(pattern, content):
+              # Add the PR entry right after "Latest Release" heading
+              content = re.sub(
+                  pattern,
+                  r'\1' + pr_entry + '\n',
+                  content,
+                  count=1
+              )
+          else:
+              # If no "Latest Release" section exists, create it
+              content = "# Changelog\n\n## Latest Release\n" + pr_entry + "\n\n" + content
+          
+          with open('CHANGELOG.md', 'w') as f:
+              f.write(content)
+          PYTHON_SCRIPT
+          fi
+
+      - name: Commit and push changes
+        if: steps.pr.outputs.should_skip == 'false'
+        run: |
+          git add CHANGELOG.md
+          
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          
+          git commit -m "chore: update CHANGELOG for PR #${{ steps.pr.outputs.number }}
+
+Co-Authored-By: Warp <agent@warp.dev>"
+          git push origin main
