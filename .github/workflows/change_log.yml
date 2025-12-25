@@ -20,81 +20,85 @@ jobs:
 
       - name: Configure git
         run: |
-          git config user.name "[bot] Release Updater"
-          git config user.email "release-bot@github.com"
+          git config user.name "[bot] Changelog Updater"
+          git config user.email "changelog-bot@github.com"
 
-      - name: Get merged PR info
+      - name: Get merged PR for commit
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR_JSON=$(gh pr list --state merged --base main --limit 1 --json title,number,url)
-          TITLE=$(echo "$PR_JSON" | jq -r '.[0].title')
-          NUMBER=$(echo "$PR_JSON" | jq -r '.[0].number')
-          URL=$(echo "$PR_JSON" | jq -r '.[0].url')
+          PR=$(gh pr list \
+            --state merged \
+            --search "${GITHUB_SHA}" \
+            --json title,number,url \
+            --jq '.[0]')
 
-          echo "TITLE=$TITLE" >> $GITHUB_ENV
-          echo "NUMBER=$NUMBER" >> $GITHUB_ENV
-          echo "URL=$URL" >> $GITHUB_ENV
-
-      - name: Update change_log.md
-        run: |
-          TITLE="${TITLE}"
-          FILE="change_log.md"
-
-          # Ensure file exists
-          if [ ! -f "$FILE" ]; then
-            echo -e "## Latest Release\n" > "$FILE"
+          if [ "$PR" = "null" ]; then
+            echo "No PR found for this commit"
+            exit 0
           fi
 
-          # Ignore Internal PRs (any case)
+          echo "TITLE=$(echo "$PR" | jq -r .title)" >> $GITHUB_ENV
+          echo "NUMBER=$(echo "$PR" | jq -r .number)" >> $GITHUB_ENV
+          echo "URL=$(echo "$PR" | jq -r .url)" >> $GITHUB_ENV
+
+      - name: Update CHANGELOG.md
+        run: |
+          FILE="CHANGELOG.md"
+          TITLE="$TITLE"
+
+          # Ensure base header exists
+          if ! grep -q "^## Flutter 3.38 Changes" "$FILE"; then
+            sed -i '1s/^/## Flutter 3.38 Changes\n\n/' "$FILE"
+          fi
+
+          # Ignore internal PRs
           if [[ "$TITLE" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
             echo "Ignoring internal PR"
             exit 0
           fi
 
-          # Handle Release build PR
-          if [[ "$TITLE" =~ ^[Rr]elease\ build\ ([0-9.+]+) ]]; then
+          # Handle Release PR
+          if [[ "$TITLE" =~ ^[Rr]elease\ build\ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
             VERSION="${BASH_REMATCH[1]}"
+            TAG_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${VERSION}"
 
-            awk -v version="$VERSION" '
-              BEGIN { in_latest=0 }
-              /^## Latest Release/ {
-                print "## " version
-                in_latest=1
+            awk -v v="$VERSION" -v url="$TAG_URL" '
+              BEGIN { inserted=0 }
+              /^## Flutter 3.38 Changes/ {
+                print
+                print ""
+                print "### [" v "](" url ")"
+                print ""
+                inserted=1
                 next
               }
-              /^## / && in_latest {
-                in_latest=0
-                print "\n## Latest Release\n"
-              }
-              {
-                if (in_latest) print
-              }
+              { print }
             ' "$FILE" > tmp.md
 
             mv tmp.md "$FILE"
             exit 0
           fi
 
-          # Normal PR → append under Latest Release
-          ENTRY="- ${TITLE} ([#${NUMBER}](${URL}))"
+          # Normal PR entry
+          ENTRY="- [#${NUMBER}](${URL}) ${TITLE}"
 
           awk -v entry="$ENTRY" '
             BEGIN { added=0 }
-            {
+            /^### \[/ && !added {
               print
-              if ($0 == "## Latest Release" && !added) {
-                print entry
-                added=1
-              }
+              print entry
+              added=1
+              next
             }
+            { print }
           ' "$FILE" > tmp.md
 
           mv tmp.md "$FILE"
 
-      - name: Commit and push changes
+      - name: Commit and push
         run: |
-          git add change_log.md
+          git add CHANGELOG.md
           git commit -m "chore(changelog): update from PR #${NUMBER}" || exit 0
-          git push
+          git push origin main
