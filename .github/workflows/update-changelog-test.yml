@@ -1,4 +1,4 @@
-name: Update CHANGELOG on PR merge
+name: Update CHANGELOG on PR merge (Test)
 
 on:
   pull_request:
@@ -9,16 +9,13 @@ jobs:
   update-changelog:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: read
 
     steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
+      - name: Checkout repository
+        run: |
+          # Simulate checkout - in act this will use the local directory
+          pwd
+          ls -la
 
       - name: Configure git
         run: |
@@ -36,21 +33,27 @@ jobs:
           echo "number=$NUMBER" >> $GITHUB_OUTPUT
           echo "url=$URL" >> $GITHUB_OUTPUT
           
+          echo "Processing PR: $TITLE"
+          
           # Check if PR should be ignored (starts with "internal" - case insensitive)
           if [[ "$TITLE" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
             echo "should_skip=true" >> $GITHUB_OUTPUT
+            echo "✓ This PR will be skipped (Internal)"
           else
             echo "should_skip=false" >> $GITHUB_OUTPUT
+            echo "✓ This PR will be processed"
           fi
           
           # Check if PR is a release (starts with "release" - case insensitive)
           if [[ "$TITLE" =~ ^[Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]]; then
             echo "is_release=true" >> $GITHUB_OUTPUT
-            # Extract version number (e.g., "Release Build 2.2154.009+3467" -> "2.2154.009+3467")
+            # Extract version number
             VERSION=$(echo "$TITLE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
             echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "✓ Release PR detected - Version: $VERSION"
           else
             echo "is_release=false" >> $GITHUB_OUTPUT
+            echo "✓ Normal PR"
           fi
 
       - name: Update CHANGELOG.md
@@ -62,6 +65,8 @@ jobs:
           IS_RELEASE="${{ steps.pr.outputs.is_release }}"
           VERSION="${{ steps.pr.outputs.version }}"
           
+          echo "Updating CHANGELOG.md..."
+          
           # Create CHANGELOG.md if it doesn't exist
           if [ ! -f CHANGELOG.md ]; then
             echo "# Changelog" > CHANGELOG.md
@@ -72,7 +77,7 @@ jobs:
           
           # Process based on PR type
           if [ "$IS_RELEASE" = "true" ]; then
-            # This is a release PR - create new version section
+            echo "→ Adding release version section: $VERSION"
             export VERSION
             export NUMBER
             export URL
@@ -88,8 +93,6 @@ jobs:
           with open('CHANGELOG.md', 'r') as f:
               content = f.read()
           
-          # Replace "Latest Release" with the new version
-          # Find the "Latest Release" section and rename it
           new_section = f"### [{version}]({pr_url})"
           content = re.sub(
               r'## Latest Release',
@@ -100,9 +103,11 @@ jobs:
           
           with open('CHANGELOG.md', 'w') as f:
               f.write(content)
+          
+          print(f"✓ Added release section for version {version}")
           PYTHON_SCRIPT
           else
-            # This is a normal PR - add to Latest Release section
+            echo "→ Adding PR entry"
             export TITLE
             export NUMBER
             export URL
@@ -118,15 +123,10 @@ jobs:
           with open('CHANGELOG.md', 'r') as f:
               content = f.read()
           
-          # Create the PR entry in the format: - [owner/repo#number](url) Title
           pr_entry = f"- [{repo}#{pr_number}]({pr_url}) {title}"
-          
-          # Find the "Latest Release" section and add the entry after it
-          # Look for the pattern "## Latest Release" followed by optional whitespace
           pattern = r'(## Latest Release\s*\n)'
           
           if re.search(pattern, content):
-              # Add the PR entry right after "Latest Release" heading
               content = re.sub(
                   pattern,
                   r'\1' + pr_entry + '\n',
@@ -134,32 +134,25 @@ jobs:
                   count=1
               )
           else:
-              # If no "Latest Release" section exists, create it
               content = "# Changelog\n\n## Latest Release\n" + pr_entry + "\n\n" + content
           
           with open('CHANGELOG.md', 'w') as f:
               f.write(content)
+          
+          print(f"✓ Added PR entry: {title}")
           PYTHON_SCRIPT
           fi
+          
+          echo ""
+          echo "Updated CHANGELOG.md:"
+          cat CHANGELOG.md
 
-      - name: Commit and push changes
+      - name: Show changes
         if: steps.pr.outputs.should_skip == 'false'
         run: |
-          git add CHANGELOG.md
+          echo "Git status:"
+          git status
           
-          # Check if there are changes to commit
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-          
-          git commit -m "chore: update CHANGELOG for PR #${{ steps.pr.outputs.number }}" -m "Co-Authored-By: Warp <agent@warp.dev>"
-          
-          # Only push if not running in act (local testing)
-          if [ -z "$ACT" ]; then
-            git push origin main
-          else
-            echo "Running in act - skipping push"
-            echo "Changes committed locally:"
-            git log -1 --stat
-          fi
+          echo ""
+          echo "Git diff:"
+          git diff CHANGELOG.md || echo "No changes to diff"
