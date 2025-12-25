@@ -7,7 +7,10 @@ on:
 
 jobs:
   update-changelog:
-    if: github.event.pull_request.merged == true
+    if: |
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.title, 'elease') &&
+      !contains(github.event.pull_request.title, 'nternal')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -25,125 +28,243 @@ jobs:
           git config user.name "[bot] Changelog Updater"
           git config user.email "changelog-bot@github.com"
 
-      - name: Extract PR details
-        id: pr
+      - name: Extract current release version
+        id: current
         run: |
           TITLE="${{ github.event.pull_request.title }}"
           NUMBER="${{ github.event.pull_request.number }}"
           URL="${{ github.event.pull_request.html_url }}"
           
-          echo "title=$TITLE" >> $GITHUB_OUTPUT
+          # Extract version number
+          VERSION=$(echo "$TITLE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
+          
+          # Extract major.minor (e.g., 2.2154 from 2.2154.009+3467)
+          MAJOR_MINOR=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "major_minor=$MAJOR_MINOR" >> $GITHUB_OUTPUT
           echo "number=$NUMBER" >> $GITHUB_OUTPUT
           echo "url=$URL" >> $GITHUB_OUTPUT
           
-          # Check if PR should be ignored (starts with "internal" - case insensitive)
-          if [[ "$TITLE" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
-            echo "should_skip=true" >> $GITHUB_OUTPUT
+          echo "Current Release: $VERSION"
+          echo "Major.Minor: $MAJOR_MINOR"
+
+      - name: Find previous release and collect PRs
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CURRENT_PR_NUMBER="${{ steps.current.outputs.number }}"
+          CURRENT_VERSION="${{ steps.current.outputs.version }}"
+          CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
+          
+          echo "Searching for previous release PR..."
+          
+          # Get all merged PRs to main, sorted by merge date (newest first)
+          PREVIOUS_RELEASE_PR=""
+          PREVIOUS_VERSION=""
+          PREVIOUS_MAJOR_MINOR=""
+          
+          # Search for the most recent release PR before current one
+          gh pr list \
+            --state merged \
+            --base main \
+            --limit 100 \
+            --json number,title,mergedAt,url \
+            --jq 'sort_by(.mergedAt) | reverse | .[] | select(.number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > prs.txt
+          
+          while IFS='|' read -r pr_num pr_title pr_url; do
+            # Check if this PR is a release PR (not internal)
+            if [[ "$pr_title" =~ ^[Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]] && ! [[ "$pr_title" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
+              PREVIOUS_RELEASE_PR="$pr_num"
+              PREVIOUS_VERSION=$(echo "$pr_title" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
+              PREVIOUS_MAJOR_MINOR=$(echo "$PREVIOUS_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+              echo "Found previous release: PR #$PREVIOUS_RELEASE_PR - $PREVIOUS_VERSION"
+              break
+            fi
+          done < prs.txt
+          
+          # Determine if this is a new major/minor version
+          if [ -z "$PREVIOUS_MAJOR_MINOR" ]; then
+            echo "is_new_version=true" >> $GITHUB_OUTPUT
+            echo "This is the first release"
+          elif [ "$CURRENT_MAJOR_MINOR" != "$PREVIOUS_MAJOR_MINOR" ]; then
+            echo "is_new_version=true" >> $GITHUB_OUTPUT
+            echo "New version detected: $PREVIOUS_MAJOR_MINOR -> $CURRENT_MAJOR_MINOR"
           else
-            echo "should_skip=false" >> $GITHUB_OUTPUT
+            echo "is_new_version=false" >> $GITHUB_OUTPUT
+            echo "Same version family: $CURRENT_MAJOR_MINOR"
           fi
           
-          # Check if PR is a release (starts with "release" - case insensitive)
-          if [[ "$TITLE" =~ ^[Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]]; then
-            echo "is_release=true" >> $GITHUB_OUTPUT
-            # Extract version number (e.g., "Release Build 2.2154.009+3467" -> "2.2154.009+3467")
-            VERSION=$(echo "$TITLE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "previous_pr=$PREVIOUS_RELEASE_PR" >> $GITHUB_OUTPUT
+          echo "previous_version=$PREVIOUS_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Collect PRs between releases
+        id: prs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CURRENT_PR_NUMBER="${{ steps.current.outputs.number }}"
+          PREVIOUS_PR_NUMBER="${{ steps.collect.outputs.previous_pr }}"
+          
+          echo "Collecting PRs between #$PREVIOUS_PR_NUMBER and #$CURRENT_PR_NUMBER..."
+          
+          # Get all PRs between previous and current release
+          PR_LIST=""
+          
+          if [ -n "$PREVIOUS_PR_NUMBER" ]; then
+            gh pr list \
+              --state merged \
+              --base main \
+              --limit 500 \
+              --json number,title,url \
+              --jq '.[] | select(.number > '$PREVIOUS_PR_NUMBER' and .number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > between_prs.txt
           else
-            echo "is_release=false" >> $GITHUB_OUTPUT
+            # No previous release, get all PRs before current
+            gh pr list \
+              --state merged \
+              --base main \
+              --limit 500 \
+              --json number,title,url \
+              --jq '.[] | select(.number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > between_prs.txt
           fi
+          
+          # Filter out internal PRs and collect normal PRs
+          NORMAL_PRS=""
+          while IFS='|' read -r pr_num pr_title pr_url; do
+            # Skip internal PRs
+            if [[ "$pr_title" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
+              echo "Skipping internal PR #$pr_num: $pr_title"
+              continue
+            fi
+            
+            # Skip release PRs
+            if [[ "$pr_title" =~ ^[Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]]; then
+              continue
+            fi
+            
+            # Add to list
+            if [ -z "$NORMAL_PRS" ]; then
+              NORMAL_PRS="$pr_num|$pr_title|$pr_url"
+            else
+              NORMAL_PRS="${NORMAL_PRS}{pr_num}|${pr_title}|${pr_url}"
+            fi
+          done < between_prs.txt
+          
+          # Save PR list to file for next step
+          echo "$NORMAL_PRS" > normal_prs.txt
+          
+          PR_COUNT=$(echo "$NORMAL_PRS" | grep -c '|' || echo "0")
+          echo "Found $PR_COUNT normal PRs"
+          echo "pr_count=$PR_COUNT" >> $GITHUB_OUTPUT
 
       - name: Update CHANGELOG.md
-        if: steps.pr.outputs.should_skip == 'false'
         run: |
-          TITLE="${{ steps.pr.outputs.title }}"
-          NUMBER="${{ steps.pr.outputs.number }}"
-          URL="${{ steps.pr.outputs.url }}"
-          IS_RELEASE="${{ steps.pr.outputs.is_release }}"
-          VERSION="${{ steps.pr.outputs.version }}"
+          CURRENT_VERSION="${{ steps.current.outputs.version }}"
+          CURRENT_PR_URL="${{ steps.current.outputs.url }}"
+          CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
+          IS_NEW_VERSION="${{ steps.collect.outputs.is_new_version }}"
+          PREVIOUS_VERSION="${{ steps.collect.outputs.previous_version }}"
+          REPO="${{ github.repository }}"
           
           # Create CHANGELOG.md if it doesn't exist
           if [ ! -f CHANGELOG.md ]; then
             echo "# Changelog" > CHANGELOG.md
             echo "" >> CHANGELOG.md
-            echo "## Latest Release" >> CHANGELOG.md
-            echo "" >> CHANGELOG.md
           fi
           
-          # Process based on PR type
-          if [ "$IS_RELEASE" = "true" ]; then
-            # This is a release PR - create new version section
-            export VERSION
-            export NUMBER
-            export URL
-            python3 << 'PYTHON_SCRIPT'
-          import re
-          import sys
-          import os
+          export CURRENT_VERSION
+          export CURRENT_PR_URL
+          export IS_NEW_VERSION
+          export PREVIOUS_VERSION
+          export REPO
           
-          version = os.environ.get('VERSION')
-          pr_number = os.environ.get('NUMBER')
-          pr_url = os.environ.get('URL')
-          
-          with open('CHANGELOG.md', 'r') as f:
-              content = f.read()
-          
-          # Replace "Latest Release" with the new version
-          # Find the "Latest Release" section and rename it
-          new_section = f"### [{version}]({pr_url})"
-          content = re.sub(
-              r'## Latest Release',
-              f'## Latest Release\n\n{new_section}',
-              content,
-              count=1
-          )
-          
-          with open('CHANGELOG.md', 'w') as f:
-              f.write(content)
-          PYTHON_SCRIPT
-          else
-            # This is a normal PR - add to Latest Release section
-            export TITLE
-            export NUMBER
-            export URL
-            python3 << 'PYTHON_SCRIPT'
+          python3 << 'PYTHON_SCRIPT'
           import re
           import os
           
-          title = os.environ.get('TITLE')
-          pr_number = os.environ.get('NUMBER')
-          pr_url = os.environ.get('URL')
-          repo = "${{ github.repository }}"
+          current_version = os.environ.get('CURRENT_VERSION')
+          current_pr_url = os.environ.get('CURRENT_PR_URL')
+          is_new_version = os.environ.get('IS_NEW_VERSION')
+          previous_version = os.environ.get('PREVIOUS_VERSION')
+          repo = os.environ.get('REPO')
           
+          # Read the CHANGELOG
           with open('CHANGELOG.md', 'r') as f:
               content = f.read()
           
-          # Create the PR entry in the format: - [owner/repo#number](url) Title
-          pr_entry = f"- [{repo}#{pr_number}]({pr_url}) {title}"
+          # Read the collected PRs
+          pr_entries = []
+          try:
+              with open('normal_prs.txt', 'r') as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      parts = line.split('|')
+                      if len(parts) == 3:
+                          pr_num, pr_title, pr_url = parts
+                          pr_entries.append(f"- [{repo}#{pr_num}]({pr_url}) {pr_title}")
+          except FileNotFoundError:
+              pass
           
-          # Find the "Latest Release" section and add the entry after it
-          # Look for the pattern "## Latest Release" followed by optional whitespace
-          pattern = r'(## Latest Release\s*\n)'
+          # Reverse to show newest first
+          pr_entries.reverse()
           
-          if re.search(pattern, content):
-              # Add the PR entry right after "Latest Release" heading
-              content = re.sub(
-                  pattern,
-                  r'\1' + pr_entry + '\n',
-                  content,
-                  count=1
-              )
+          # Build the new version section
+          new_section = f"### [{current_version}]({current_pr_url})\n"
+          if pr_entries:
+              new_section += "\n".join(pr_entries) + "\n"
+          
+          # Check if this is a new major.minor version
+          if is_new_version == 'true':
+              # Create a new version heading
+              # Extract major.minor for the heading
+              major_minor = '.'.join(current_version.split('.')[:2])
+              version_heading = f"## Version {major_minor}\n\n"
+              
+              # Check if we already have content
+              if content.strip() == "# Changelog":
+                  # First release
+                  content = f"# Changelog\n\n{version_heading}{new_section}\n"
+              else:
+                  # Insert after the title
+                  content = re.sub(
+                      r'(# Changelog\s*\n)',
+                      r'\1\n' + version_heading + new_section + '\n',
+                      content,
+                      count=1
+                  )
           else:
-              # If no "Latest Release" section exists, create it
-              content = "# Changelog\n\n## Latest Release\n" + pr_entry + "\n\n" + content
+              # Same major.minor version - add to existing section
+              major_minor = '.'.join(current_version.split('.')[:2])
+              version_heading = f"## Version {major_minor}"
+              
+              # Find the version heading and add the new section after it
+              pattern = re.escape(version_heading) + r'(\s*\n)'
+              if re.search(pattern, content):
+                  content = re.sub(
+                      pattern,
+                      version_heading + r'\1\n' + new_section + '\n',
+                      content,
+                      count=1
+                  )
+              else:
+                  # Version heading doesn't exist, create it
+                  content = re.sub(
+                      r'(# Changelog\s*\n)',
+                      r'\1\n' + version_heading + '\n\n' + new_section + '\n',
+                      content,
+                      count=1
+                  )
           
           with open('CHANGELOG.md', 'w') as f:
               f.write(content)
+          
+          print(f"✓ Added release {current_version} with {len(pr_entries)} PRs")
           PYTHON_SCRIPT
-          fi
 
       - name: Commit and push changes
-        if: steps.pr.outputs.should_skip == 'false'
         run: |
           git add CHANGELOG.md
           
@@ -153,7 +274,7 @@ jobs:
             exit 0
           fi
           
-          git commit -m "chore: update CHANGELOG for PR #${{ steps.pr.outputs.number }}" -m "Co-Authored-By: Warp <agent@warp.dev>"
+          git commit -m "chore: update CHANGELOG for release ${{ steps.current.outputs.version }}" -m "Co-Authored-By: Warp <agent@warp.dev>"
           
           # Only push if not running in act (local testing)
           if [ -z "$ACT" ]; then
