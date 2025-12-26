@@ -98,6 +98,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           CURRENT_VERSION="${{ steps.current.outputs.version }}"
+          CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
           PREVIOUS_VERSION="${{ steps.previous.outputs.previous_version }}"
 
           echo "Searching $PLUGIN_REPO repo for version commits..."
@@ -138,7 +139,22 @@ jobs:
               PREVIOUS_TIMESTAMP=$(git log -1 --format="%ct" "$PREVIOUS_COMMIT")
               echo "Found previous version commit: $PREVIOUS_COMMIT at $(date -r $PREVIOUS_TIMESTAMP)"
             else
-              echo "⚠️  Previous version commit not found"
+              echo "⚠️  Exact previous version commit not found, searching for closest earlier version..."
+              
+              # Find the most recent version commit before current timestamp for same major.minor
+              if [ -n "$CURRENT_TIMESTAMP" ]; then
+                # Get all version commits for this major.minor, sorted by timestamp desc
+                FALLBACK_RESULT=$(git log --all --grep="chore: update nexus deps to v${CURRENT_MAJOR_MINOR}" --format="%H %ct" | \
+                  awk -v current="$CURRENT_TIMESTAMP" '$2 < current {print $1" "$2; exit}')
+                
+                if [ -n "$FALLBACK_RESULT" ]; then
+                  PREVIOUS_COMMIT=$(echo "$FALLBACK_RESULT" | awk '{print $1}')
+                  PREVIOUS_TIMESTAMP=$(echo "$FALLBACK_RESULT" | awk '{print $2}')
+                  echo "Found closest previous version: $PREVIOUS_COMMIT at $(date -r $PREVIOUS_TIMESTAMP)"
+                else
+                  echo "⚠️  No earlier version commits found for $CURRENT_MAJOR_MINOR"
+                fi
+              fi
             fi
           fi
 
