@@ -179,7 +179,8 @@ jobs:
               '.[] | select(.mergedAt >= $start and .mergedAt <= $end) | "\(.number)|\(.title)|\(.url)"' > nexus_prs_raw.txt
 
           # Filter out internal PRs
-          NORMAL_PRS=""
+          > nexus_prs.txt  # Create empty file
+          
           while IFS='|' read -r pr_num pr_title pr_url; do
             # Skip internal PRs
             if [[ "$pr_title" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
@@ -192,19 +193,13 @@ jobs:
               continue
             fi
             
-            # Add to list
-            if [ -z "$NORMAL_PRS" ]; then
-              NORMAL_PRS="$pr_num|$pr_title|$pr_url"
-            else
-              NORMAL_PRS="${NORMAL_PRS}${pr_num}|${pr_title}|${pr_url}"
-            fi
+            # Add to file (one per line)
+            echo "$pr_num|$pr_title|$pr_url" >> nexus_prs.txt
           done < nexus_prs_raw.txt
-
-          # Save PR list
-          echo "$NORMAL_PRS" > nexus_prs.txt
-
-          PR_COUNT=$(echo "$NORMAL_PRS" | grep -c '|' || echo "0")
-          echo "Found $PR_COUNT PRs from plugin-testing"
+          
+          # Count PRs
+          PR_COUNT=$(wc -l < nexus_prs.txt | tr -d ' ')
+          echo "Found $PR_COUNT PRs from scapia-nexus"
           echo "pr_count=$PR_COUNT" >> $GITHUB_OUTPUT
 
       - name: Update NEXUS_CHANGELOG.md
@@ -247,18 +242,20 @@ jobs:
           with open('NEXUS_CHANGELOG.md', 'r') as f:
               content = f.read()
 
-          # Read the collected PRs from plugin-testing
+          # Read the collected PRs from scapia-nexus
           pr_entries = []
           try:
               with open('nexus_prs.txt', 'r') as f:
-                  for line in f:1
+                  for line in f:
                       line = line.strip()
                       if not line:
                           continue
                       parts = line.split('|')
-                      if len(parts) == 3:
-                          pr_num, pr_title, pr_url = parts
-                          pr_entries.append(f"- [plugin-testing#{pr_num}]({pr_url}) {pr_title}")
+                      if len(parts) >= 3:
+                          pr_num = parts[0]
+                          pr_url = parts[2]
+                          pr_title = '|'.join(parts[1:-1]) if len(parts) > 3 else parts[1]
+                          pr_entries.append(f"- [scapia-nexus#{pr_num}]({pr_url}) {pr_title}")
           except FileNotFoundError:
               pass
 
