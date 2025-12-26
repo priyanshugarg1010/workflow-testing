@@ -190,8 +190,18 @@ jobs:
             touch nexus_prs.txt
             exit 0
           fi
+          
+          # Check if timestamps are the same
+          if [ "$CURRENT_TIMESTAMP" = "$PREVIOUS_TIMESTAMP" ]; then
+            echo "⚠️  Current and previous timestamps are the same - no PRs to collect"
+            echo "pr_count=0" >> $GITHUB_OUTPUT
+            touch nexus_prs.txt
+            exit 0
+          fi
 
           echo "Collecting PRs from $PLUGIN_REPO between timestamps..."
+          echo "Current timestamp: $CURRENT_TIMESTAMP"
+          echo "Previous timestamp: $PREVIOUS_TIMESTAMP"
           echo "From: $(date -d @$PREVIOUS_TIMESTAMP)"
           echo "To: $(date -d @$CURRENT_TIMESTAMP)"
 
@@ -204,9 +214,9 @@ jobs:
             --repo "$PLUGIN_REPO" \
             --state merged \
             --limit 500 \
-            --json number,title,url,mergedAt \
-            --jq --arg start "$START_DATE" --arg end "$END_DATE" \
-              '.[] | select(.mergedAt >= $start and .mergedAt <= $end) | "\(.number)|\(.title)|\(.url)"' > nexus_prs_raw.txt
+            --json number,title,url,mergedAt | \
+          jq -r --arg start "$START_DATE" --arg end "$END_DATE" \
+            '.[] | select(.mergedAt >= $start and .mergedAt <= $end) | "\(.number)|\(.title)|\(.url)"' > nexus_prs_raw.txt
 
           # Filter out internal PRs
           > nexus_prs.txt  # Create empty file
