@@ -102,7 +102,7 @@ jobs:
 
           # Clone or fetch plugin-testing repo (shallow clone with last 200 commits)
           if [ ! -d "plugin-testing" ]; then
-            gh repo clone plugin-testing/plugin-testing -- --depth 200
+            gh repo clone plugin-testing -- --depth 200
           fi
 
           cd plugin-testing
@@ -171,7 +171,7 @@ jobs:
 
           # Get PRs merged between these timestamps
           gh pr list \
-            --repo plugin-testing/plugin-testing \
+            --repo plugin-testing \
             --state merged \
             --limit 500 \
             --json number,title,url,mergedAt \
