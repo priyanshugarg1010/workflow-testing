@@ -121,9 +121,20 @@ jobs:
           CURRENT_COMMIT=$(git log --all --oneline --grep="$COMMIT_PATTERN" -n 1 --format="%H")
           if [ -n "$CURRENT_COMMIT" ]; then
             CURRENT_TIMESTAMP=$(git log -1 --format="%ct" "$CURRENT_COMMIT")
-            echo "Found current version commit: $CURRENT_COMMIT at $(date -r $CURRENT_TIMESTAMP)"
+            echo "Found current version commit: $CURRENT_COMMIT at $(date -d @$CURRENT_TIMESTAMP)"
           else
-            echo "⚠️  Current version commit not found"
+            echo "⚠️  Exact current version commit not found, searching for closest version..."
+            
+            # Find the most recent version commit for same major.minor
+            FALLBACK_RESULT=$(git log --all --grep="chore: update nexus deps to v${CURRENT_MAJOR_MINOR}" --format="%H %ct" | head -1)
+            
+            if [ -n "$FALLBACK_RESULT" ]; then
+              CURRENT_COMMIT=$(echo "$FALLBACK_RESULT" | awk '{print $1}')
+              CURRENT_TIMESTAMP=$(echo "$FALLBACK_RESULT" | awk '{print $2}')
+              echo "Found closest current version: $CURRENT_COMMIT at $(date -d @$CURRENT_TIMESTAMP)"
+            else
+              echo "⚠️  No version commits found for $CURRENT_MAJOR_MINOR"
+            fi
           fi
 
           # Search for previous version commit
@@ -137,7 +148,7 @@ jobs:
             PREVIOUS_COMMIT=$(git log --all --oneline --grep="$COMMIT_PATTERN" -n 1 --format="%H")
             if [ -n "$PREVIOUS_COMMIT" ]; then
               PREVIOUS_TIMESTAMP=$(git log -1 --format="%ct" "$PREVIOUS_COMMIT")
-              echo "Found previous version commit: $PREVIOUS_COMMIT at $(date -r $PREVIOUS_TIMESTAMP)"
+              echo "Found previous version commit: $PREVIOUS_COMMIT at $(date -d @$PREVIOUS_TIMESTAMP)"
             else
               echo "⚠️  Exact previous version commit not found, searching for closest earlier version..."
               
@@ -150,7 +161,7 @@ jobs:
                 if [ -n "$FALLBACK_RESULT" ]; then
                   PREVIOUS_COMMIT=$(echo "$FALLBACK_RESULT" | awk '{print $1}')
                   PREVIOUS_TIMESTAMP=$(echo "$FALLBACK_RESULT" | awk '{print $2}')
-                  echo "Found closest previous version: $PREVIOUS_COMMIT at $(date -r $PREVIOUS_TIMESTAMP)"
+                  echo "Found closest previous version: $PREVIOUS_COMMIT at $(date -d @$PREVIOUS_TIMESTAMP)"
                 else
                   echo "⚠️  No earlier version commits found for $CURRENT_MAJOR_MINOR"
                 fi
@@ -181,12 +192,12 @@ jobs:
           fi
 
           echo "Collecting PRs from $PLUGIN_REPO between timestamps..."
-          echo "From: $(date -r $PREVIOUS_TIMESTAMP)"
-          echo "To: $(date -r $CURRENT_TIMESTAMP)"
+          echo "From: $(date -d @$PREVIOUS_TIMESTAMP)"
+          echo "To: $(date -d @$CURRENT_TIMESTAMP)"
 
           # Convert to ISO format for GitHub API
-          START_DATE=$(date -r "$PREVIOUS_TIMESTAMP" -u +"%Y-%m-%dT%H:%M:%SZ")
-          END_DATE=$(date -r "$CURRENT_TIMESTAMP" -u +"%Y-%m-%dT%H:%M:%SZ")
+          START_DATE=$(date -d @"$PREVIOUS_TIMESTAMP" -u +"%Y-%m-%dT%H:%M:%SZ")
+          END_DATE=$(date -d @"$CURRENT_TIMESTAMP" -u +"%Y-%m-%dT%H:%M:%SZ")
 
           # Get PRs merged between these timestamps
           gh pr list \
