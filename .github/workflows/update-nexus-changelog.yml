@@ -15,6 +15,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+    env:
+      PLUGIN_REPO: "priyanshugarg1010/plugin-testing"
 
     steps:
       - name: Wait for main changelog workflow
@@ -98,14 +100,15 @@ jobs:
           CURRENT_VERSION="${{ steps.current.outputs.version }}"
           PREVIOUS_VERSION="${{ steps.previous.outputs.previous_version }}"
 
-          echo "Searching plugin-testing repo for version commits..."
-
+          echo "Searching $PLUGIN_REPO repo for version commits..."
+          
           # Clone or fetch plugin-testing repo (shallow clone with last 200 commits)
-          if [ ! -d "plugin-testing" ]; then
-            gh repo clone plugin-testing -- --depth 200
+          REPO_NAME=$(basename "$PLUGIN_REPO")
+          if [ ! -d "$REPO_NAME" ]; then
+            gh repo clone "$PLUGIN_REPO" -- --depth 200
           fi
 
-          cd plugin-testing
+          cd "$REPO_NAME"
 
           # Search for current version commit
           CURRENT_COMMIT=""
@@ -161,7 +164,7 @@ jobs:
             exit 0
           fi
 
-          echo "Collecting PRs from plugin-testing between timestamps..."
+          echo "Collecting PRs from $PLUGIN_REPO between timestamps..."
           echo "From: $(date -r $PREVIOUS_TIMESTAMP)"
           echo "To: $(date -r $CURRENT_TIMESTAMP)"
 
@@ -171,7 +174,7 @@ jobs:
 
           # Get PRs merged between these timestamps
           gh pr list \
-            --repo plugin-testing \
+            --repo "$PLUGIN_REPO" \
             --state merged \
             --limit 500 \
             --json number,title,url,mergedAt \
@@ -199,7 +202,7 @@ jobs:
           
           # Count PRs
           PR_COUNT=$(wc -l < nexus_prs.txt | tr -d ' ')
-          echo "Found $PR_COUNT PRs from scapia-nexus"
+          echo "Found $PR_COUNT PRs from $PLUGIN_REPO"
           echo "pr_count=$PR_COUNT" >> $GITHUB_OUTPUT
 
       - name: Update NEXUS_CHANGELOG.md
@@ -255,7 +258,8 @@ jobs:
                           pr_num = parts[0]
                           pr_url = parts[2]
                           pr_title = '|'.join(parts[1:-1]) if len(parts) > 3 else parts[1]
-                          pr_entries.append(f"- [scapia-nexus#{pr_num}]({pr_url}) {pr_title}")
+                          # Use repo name from environment or default
+                          pr_entries.append(f"- [plugin-testing#{pr_num}]({pr_url}) {pr_title}")
           except FileNotFoundError:
               pass
 
