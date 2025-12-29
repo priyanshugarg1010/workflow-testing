@@ -843,7 +843,8 @@ jobs:
           fi
           
           # Filter out internal PRs and collect normal PRs
-          NORMAL_PRS=""
+          > normal_prs.txt  # Create empty file
+          
           while IFS='|' read -r pr_num pr_title pr_url pr_labels pr_merged_at; do
             # Skip internal PRs
             if [[ "$pr_title" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
@@ -856,18 +857,12 @@ jobs:
               continue
             fi
             
-            # Add to list
-            if [ -z "$NORMAL_PRS" ]; then
-              NORMAL_PRS="$pr_num|$pr_title|$pr_url|$pr_labels|$pr_merged_at"
-            else
-              NORMAL_PRS="${NORMAL_PRS}${pr_num}|${pr_title}|${pr_url}|${pr_labels}|${pr_merged_at}"
-            fi
+            # Add to file (one per line)
+            echo "$pr_num|$pr_title|$pr_url|$pr_labels|$pr_merged_at" >> normal_prs.txt
           done < between_prs.txt
           
-          # Save PR list to file for next step
-          echo "$NORMAL_PRS" > normal_prs.txt
-          
-          PR_COUNT=$(echo "$NORMAL_PRS" | grep -c '|' || echo "0")
+          # Count PRs
+          PR_COUNT=$(wc -l < normal_prs.txt | tr -d ' ')
           echo "Found $PR_COUNT normal PRs"
           echo "pr_count=$PR_COUNT" >> $GITHUB_OUTPUT
 
@@ -933,10 +928,13 @@ jobs:
           
           def format_date(iso_date):
               """Format ISO date to DD/MM/YY"""
+              if not iso_date:
+                  return ''
               try:
                   dt = datetime.fromisoformat(iso_date.replace('Z', '+00:00'))
                   return dt.strftime('%d/%m/%y')
-              except:
+              except Exception as e:
+                  print(f"Warning: Could not parse date '{iso_date}': {e}")
                   return ''
           
           # Read the CHANGELOG
@@ -953,10 +951,23 @@ jobs:
                           continue
                       parts = line.split('|')
                       if len(parts) >= 5:
-                          pr_num, pr_title, pr_url, pr_labels, pr_merged_at = parts[:5]
+                          pr_num = parts[0]
+                          # Last 3 parts are always: url, labels, mergedAt
+                          pr_url = parts[-3]
+                          pr_labels = parts[-2]
+                          pr_merged_at = parts[-1]
+                          # Title is everything in between (handles | in title)
+                          pr_title = '|'.join(parts[1:-3])
+                          
                           category = categorize_pr(pr_labels)
                           date_str = format_date(pr_merged_at)
-                          entry = f"- {date_str} - [#{pr_num}]({pr_url}) {pr_title}"
+                          
+                          # Only add date if it exists
+                          if date_str:
+                              entry = f"- {date_str} - [#{pr_num}]({pr_url}) {pr_title}"
+                          else:
+                              entry = f"- [#{pr_num}]({pr_url}) {pr_title}"
+                          
                           categorized_prs[category].append(entry)
           except FileNotFoundError:
               pass
@@ -970,8 +981,8 @@ jobs:
               if category in categorized_prs:
                   # Sort entries by date (newest first) within each category
                   entries = sorted(categorized_prs[category], reverse=True)
-                  pr_section += f"\n**{category}**\n"
-                  pr_section += "\n".join(entries) + "\n"
+                  pr_section += f"**{category}**\n"
+                  pr_section += "\n".join(entries) + "\n\n"
           
           # Extract major.minor for the version label
           major_minor = '.'.join(current_version.split('.')[:2])
@@ -1031,8 +1042,8 @@ jobs:
                           # Remove duplicates and sort
                           unique_entries = list(dict.fromkeys(existing_categorized[category]))
                           sorted_entries = sorted(unique_entries, reverse=True)
-                          merged_section += f"\n**{category}**\n"
-                          merged_section += "\n".join(sorted_entries) + "\n"
+                          merged_section += f"**{category}**\n"
+                          merged_section += "\n".join(sorted_entries) + "\n\n"
                   
                   # Build updated section
                   updated_section = f"### [{current_version}]({current_pr_url}) Version {major_minor}\n{merged_section}"
