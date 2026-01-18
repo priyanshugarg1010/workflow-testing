@@ -388,7 +388,7 @@ on:
   pull_request:
     types: [closed]
     branches: 
-      - master
+      - main
 
 # Workflow-level permissions
 permissions:
@@ -450,7 +450,7 @@ jobs:
         if: steps.validate.outputs.valid == 'true'
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: main
           fetch-depth: 0  # Fetch full history including all tags
 
       # ================================================================
@@ -594,10 +594,8 @@ jobs:
           #   Examples: "backend", "api", "plugin"
           # ============================================================
           REPOSITORIES=(
-            "${{ steps.current.outputs.main_repo }}::main-repo"  # Main repo (uses tags directly)
-            # "your-org/backend-repo:chore: update deps to v{VERSION}:backend"
-            # "your-org/api-repo:Release {VERSION}:api"
-            # "priyanshugarg1010/plugin-testing:chore: update nexus deps to v{VERSION}:plugin"
+          "${{ steps.current.outputs.main_repo }}::main-repo"  # Main repo (uses tags directly)
+          "priyanshugarg1010/plugin-testing:chore: update nexus deps to v{VERSION}:plugin"
           )
           
           echo "=========================================="
@@ -713,7 +711,7 @@ jobs:
               gh pr list \
                 --repo "$REPO" \
                 --state merged \
-                --base master \
+                --base main \
                 --limit 500 \
                 --json number,title,url,labels,mergedAt \
                 --jq '.[] | select(.mergedAt > "'"$START_TIME"'" and .mergedAt <= "'"$END_TIME"'") | "\(.number)|\(.title)|\(.url)|\(.labels | map(.name) | join(","))|\(.mergedAt)|'"$LABEL"'"' >> all_repos_prs.txt || {
@@ -725,7 +723,7 @@ jobs:
               gh pr list \
                 --repo "$REPO" \
                 --state merged \
-                --base master \
+                --base main \
                 --limit 500 \
                 --json number,title,url,labels,mergedAt \
                 --jq '.[] | select(.mergedAt <= "'"$END_TIME"'") | "\(.number)|\(.title)|\(.url)|\(.labels | map(.name) | join(","))|\(.mergedAt)|'"$LABEL"'"' >> all_repos_prs.txt || {
@@ -1025,7 +1023,7 @@ jobs:
           
           echo "✅ Changes committed"
           echo "⬆️  Pushing to master branch..."
-          git push origin master
+          git push origin main
           
           echo "✅ Changes pushed successfully"
 
