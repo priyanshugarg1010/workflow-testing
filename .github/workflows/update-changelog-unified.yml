@@ -242,7 +242,7 @@ jobs:
           # ============================================================
           REPOSITORIES=(
           "${{ steps.current.outputs.main_repo }}::main-repo"  # Main repo (uses tags directly)
-          "priyanshugarg1010/plugin-testing:chore: update nexus deps to v{VERSION}:plugin"
+          "priyanshugarg1010/plugin-testing:chore: update CHANGELOG for release {VERSION}:plugin"
           # Add more repositories here:
           # "owner/repo-name:chore: update deps to v{VERSION}:label"
           # "another-owner/another-repo:Release {VERSION}:another-label"
