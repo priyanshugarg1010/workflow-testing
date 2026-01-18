@@ -392,9 +392,9 @@ on:
 
 # Workflow-level permissions
 permissions:
-  contents: write        # Required for pushing changes
-  pull-requests: read    # Required for reading PR data
-  issues: read          # Required for reading issues
+  contents: write
+  pull-requests: read
+  issues: read
 
 jobs:
   update-changelog:
@@ -454,7 +454,7 @@ jobs:
           fetch-depth: 0  # Fetch full history including all tags
 
       # ================================================================
-      # STEP 2: Configure Git
+      # STEP 3: Configure Git
       # ================================================================
       - name: Configure Git
         if: steps.validate.outputs.valid == 'true'
@@ -465,13 +465,12 @@ jobs:
           echo "✅ Git configured successfully"
 
       # ================================================================
-      # STEP 3: Extract version from latest tag
+      # STEP 4: Extract version from latest tag
       # ================================================================
       - name: Extract current tag version
         if: steps.validate.outputs.valid == 'true'
         id: current
         run: |
-          # Main repository (where this workflow runs)
           MAIN_REPO="${{ github.repository }}"
           
           echo "=========================================="
@@ -516,7 +515,7 @@ jobs:
           echo "✅ Tag Timestamp: $TAG_TIMESTAMP"
 
       # ================================================================
-      # STEP 4: Find previous tag and its timestamp
+      # STEP 5: Find previous tag and its timestamp
       # ================================================================
       - name: Find previous tag
         if: steps.validate.outputs.valid == 'true'
@@ -566,7 +565,7 @@ jobs:
           echo "✅ Previous Timestamp: $PREVIOUS_TIMESTAMP"
 
       # ================================================================
-      # STEP 5: Collect PRs from multiple repositories
+      # STEP 6: Collect PRs from multiple repositories
       # ================================================================
       - name: Collect PRs from multiple repositories
         if: steps.validate.outputs.valid == 'true'
@@ -574,6 +573,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          CURRENT_VERSION="${{ steps.current.outputs.version }}"
           CURRENT_TIMESTAMP="${{ steps.current.outputs.timestamp }}"
           HAS_PREVIOUS="${{ steps.previous.outputs.has_previous }}"
           PREVIOUS_TIMESTAMP="${{ steps.previous.outputs.timestamp }}"
@@ -581,11 +581,23 @@ jobs:
           # ============================================================
           # TODO: ADD YOUR REPOSITORIES HERE
           # Add all repositories you want to collect PRs from
-          # Format: "owner/repo-name"
+          # Format: "owner/repo-name:commit-message-pattern:changelog-label"
+          # 
+          # commit-message-pattern: Pattern to find version commits in that repo
+          #   Use {VERSION} placeholder which will be replaced with actual version
+          #   Examples: 
+          #     - "chore: update deps to v{VERSION}"
+          #     - "Release {VERSION}"
+          #     - "bump version to {VERSION}"
+          #
+          # changelog-label: Short name to display in changelog
+          #   Examples: "backend", "api", "plugin"
           # ============================================================
           REPOSITORIES=(
-            "priyanshugarg1010/plugin-testing"
-            # "your-org/repo1"           # Example: Add your first repo
+            "${{ steps.current.outputs.main_repo }}::main-repo"  # Main repo (uses tags directly)
+            # "your-org/backend-repo:chore: update deps to v{VERSION}:backend"
+            # "your-org/api-repo:Release {VERSION}:api"
+            # "priyanshugarg1010/plugin-testing:chore: update nexus deps to v{VERSION}:plugin"
           )
           
           echo "=========================================="
@@ -607,39 +619,124 @@ jobs:
           > all_repos_prs.txt
           
           # Loop through each repository
-          for REPO in "${REPOSITORIES[@]}"; do
+          for REPO_CONFIG in "${REPOSITORIES[@]}"; do
+            IFS=':' read -r REPO COMMIT_PATTERN LABEL <<< "$REPO_CONFIG"
+            
             echo "──────────────────────────────────────────"
             echo "🔍 Processing Repository: $REPO"
+            echo "   Label: $LABEL"
             echo "──────────────────────────────────────────"
             
-            # Get PRs from this repository
-            if [ "$HAS_PREVIOUS" = "true" ]; then
+            # Check if this is the main repo (no commit pattern)
+            if [ -z "$COMMIT_PATTERN" ]; then
+              echo "   Using tag timestamps (main repo)"
+              START_TIME="$PREVIOUS_TIMESTAMP"
+              END_TIME="$CURRENT_TIMESTAMP"
+            else
+              echo "   Commit Pattern: $COMMIT_PATTERN"
+              
+              # Clone or fetch the repo (shallow clone)
+              REPO_NAME=$(basename "$REPO")
+              REPO_DIR="temp_$REPO_NAME"
+              
+              if [ ! -d "$REPO_DIR" ]; then
+                echo "   Cloning $REPO..."
+                gh repo clone "$REPO" "$REPO_DIR" -- --depth 200 || {
+                  echo "   ⚠️  Could not clone $REPO (may not have access)"
+                  continue
+                }
+              fi
+              
+              cd "$REPO_DIR"
+              
+              # Search for current version commit
+              CURRENT_COMMIT_MSG="${COMMIT_PATTERN/\{VERSION\}/$CURRENT_VERSION}"
+              echo "   Looking for current: $CURRENT_COMMIT_MSG"
+              
+              CURRENT_COMMIT=$(git log --all --oneline --grep="$CURRENT_COMMIT_MSG" -n 1 --format="%H")
+              
+              if [ -z "$CURRENT_COMMIT" ]; then
+                echo "   ⚠️  Current version commit not found, trying pattern match..."
+                CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
+                PATTERN="${COMMIT_PATTERN/\{VERSION\}/$CURRENT_MAJOR_MINOR}"
+                CURRENT_COMMIT=$(git log --all --grep="$PATTERN" --format="%H %ct" | head -1 | awk '{print $1}')
+              fi
+              
+              if [ -z "$CURRENT_COMMIT" ]; then
+                echo "   ⚠️  No current version commit found in $REPO"
+                cd ..
+                continue
+              fi
+              
+              END_TIME=$(git log -1 --format=%aI "$CURRENT_COMMIT")
+              echo "   ✅ Current commit: $CURRENT_COMMIT at $END_TIME"
+              
+              # Search for previous version commit
+              if [ "$HAS_PREVIOUS" = "true" ]; then
+                PREVIOUS_VERSION="${{ steps.previous.outputs.version }}"
+                PREVIOUS_COMMIT_MSG="${COMMIT_PATTERN/\{VERSION\}/$PREVIOUS_VERSION}"
+                echo "   Looking for previous: $PREVIOUS_COMMIT_MSG"
+                
+                PREVIOUS_COMMIT=$(git log --all --oneline --grep="$PREVIOUS_COMMIT_MSG" -n 1 --format="%H")
+                
+                if [ -z "$PREVIOUS_COMMIT" ]; then
+                  echo "   ⚠️  Previous version commit not found, using timestamp before current"
+                  CURRENT_TS=$(git log -1 --format=%ct "$CURRENT_COMMIT")
+                  PREVIOUS_MAJOR_MINOR="${{ steps.previous.outputs.major_minor }}"
+                  PATTERN="${COMMIT_PATTERN/\{VERSION\}/$PREVIOUS_MAJOR_MINOR}"
+                  PREVIOUS_COMMIT=$(git log --all --grep="$PATTERN" --format="%H %ct" | \
+                    awk -v current="$CURRENT_TS" '$2 < current {print $1; exit}')
+                fi
+                
+                if [ -n "$PREVIOUS_COMMIT" ]; then
+                  START_TIME=$(git log -1 --format=%aI "$PREVIOUS_COMMIT")
+                  echo "   ✅ Previous commit: $PREVIOUS_COMMIT at $START_TIME"
+                else
+                  echo "   ⚠️  No previous version commit found"
+                  START_TIME=""
+                fi
+              else
+                START_TIME=""
+              fi
+              
+              cd ..
+            fi
+            
+            # Now collect PRs between timestamps
+            if [ -z "$END_TIME" ]; then
+              echo "   ⚠️  No end timestamp, skipping PR collection"
+              continue
+            fi
+            
+            if [ -n "$START_TIME" ]; then
+              echo "   Collecting PRs from $START_TIME to $END_TIME"
               gh pr list \
                 --repo "$REPO" \
                 --state merged \
                 --base master \
                 --limit 500 \
                 --json number,title,url,labels,mergedAt \
-                --jq '.[] | select(.mergedAt > "'"$PREVIOUS_TIMESTAMP"'" and .mergedAt <= "'"$CURRENT_TIMESTAMP"'") | "\(.number)|\(.title)|\(.url)|\(.labels | map(.name) | join(","))|\(.mergedAt)|'"$REPO"'"' >> all_repos_prs.txt || {
-                echo "⚠️  Warning: Could not fetch PRs from $REPO (may not have access)"
+                --jq '.[] | select(.mergedAt > "'"$START_TIME"'" and .mergedAt <= "'"$END_TIME"'") | "\(.number)|\(.title)|\(.url)|\(.labels | map(.name) | join(","))|\(.mergedAt)|'"$LABEL"'"' >> all_repos_prs.txt || {
+                echo "   ⚠️  Could not fetch PRs from $REPO"
                 continue
               }
             else
+              echo "   Collecting all PRs up to $END_TIME"
               gh pr list \
                 --repo "$REPO" \
                 --state merged \
                 --base master \
                 --limit 500 \
                 --json number,title,url,labels,mergedAt \
-                --jq '.[] | select(.mergedAt <= "'"$CURRENT_TIMESTAMP"'") | "\(.number)|\(.title)|\(.url)|\(.labels | map(.name) | join(","))|\(.mergedAt)|'"$REPO"'"' >> all_repos_prs.txt || {
-                echo "⚠️  Warning: Could not fetch PRs from $REPO (may not have access)"
+                --jq '.[] | select(.mergedAt <= "'"$END_TIME"'") | "\(.number)|\(.title)|\(.url)|\(.labels | map(.name) | join(","))|\(.mergedAt)|'"$LABEL"'"' >> all_repos_prs.txt || {
+                echo "   ⚠️  Could not fetch PRs from $REPO"
                 continue
               }
             fi
             
             # Count PRs from this repo
-            REPO_PR_COUNT=$(grep "|$REPO$" all_repos_prs.txt | wc -l | tr -d ' ')
-            echo "  ✅ Found $REPO_PR_COUNT PRs from $REPO"
+            REPO_PR_COUNT=$(grep "|$LABEL$" all_repos_prs.txt 2>/dev/null | wc -l | tr -d ' ')
+            echo "   ✅ Found $REPO_PR_COUNT PRs from $REPO"
             echo ""
           done
           
@@ -651,32 +748,32 @@ jobs:
           > normal_prs.txt
           
           if [ -s all_repos_prs.txt ]; then
-            while IFS='|' read -r pr_num pr_title pr_url pr_labels pr_merged_at pr_repo || [ -n "$pr_num" ]; do
+            while IFS='|' read -r pr_num pr_title pr_url pr_labels pr_merged_at pr_label || [ -n "$pr_num" ]; do
               # Skip empty lines
               [ -z "$pr_num" ] && continue
               
               # Skip internal PRs (case-insensitive)
               if [[ "$pr_title" =~ [Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
-                echo "⏭️  Skipping internal PR #$pr_num from $pr_repo"
+                echo "⏭️  Skipping internal PR #$pr_num from $pr_label"
                 continue
               fi
               
               # Skip release PRs (case-insensitive)
               if [[ "$pr_title" =~ [Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]]; then
-                echo "⏭️  Skipping release PR #$pr_num from $pr_repo"
+                echo "⏭️  Skipping release PR #$pr_num from $pr_label"
                 continue
               fi
               
-              # Add to normal PRs file with repo info
-              echo "$pr_num|$pr_title|$pr_url|$pr_labels|$pr_merged_at|$pr_repo" >> normal_prs.txt
-              echo "✅ Added PR #$pr_num from $pr_repo: $pr_title"
+              # Add to normal PRs file with label
+              echo "$pr_num|$pr_title|$pr_url|$pr_labels|$pr_merged_at|$pr_label" >> normal_prs.txt
+              echo "✅ Added PR #$pr_num from $pr_label: $pr_title"
             done < all_repos_prs.txt
           else
             echo "ℹ️  No PRs found in the specified time range across all repositories"
           fi
           
           # Count total PRs
-          TOTAL_PR_COUNT=$(wc -l < normal_prs.txt | tr -d ' ')
+          TOTAL_PR_COUNT=$(wc -l < normal_prs.txt 2>/dev/null | tr -d ' ')
           echo ""
           echo "=========================================="
           echo "✅ Total PRs collected: $TOTAL_PR_COUNT"
@@ -685,7 +782,7 @@ jobs:
           echo "pr_count=$TOTAL_PR_COUNT" >> $GITHUB_OUTPUT
 
       # ================================================================
-      # STEP 6: Update CHANGELOG.md
+      # STEP 7: Update CHANGELOG.md
       # ================================================================
       - name: Update CHANGELOG.md
         if: steps.validate.outputs.valid == 'true'
@@ -694,7 +791,7 @@ jobs:
           CURRENT_TAG="${{ steps.current.outputs.tag }}"
           IS_NEW_VERSION="${{ steps.previous.outputs.is_new_version }}"
           PREVIOUS_VERSION="${{ steps.previous.outputs.version }}"
-          REPO="${{ github.repository }}"
+          MAIN_REPO="${{ steps.current.outputs.main_repo }}"
           
           echo "=========================================="
           echo "Updating CHANGELOG.md"
@@ -777,7 +874,7 @@ jobs:
           with open('CHANGELOG.md', 'r') as f:
               content = f.read()
           
-          # Read and categorize PRs
+          # Read and categorize PRs from multiple repositories
           categorized_prs = defaultdict(list)
           try:
               with open('normal_prs.txt', 'r') as f:
@@ -786,23 +883,26 @@ jobs:
                       if not line:
                           continue
                       parts = line.split('|')
-                      if len(parts) >= 5:
+                      if len(parts) >= 6:
                           pr_num = parts[0]
                           pr_url = parts[-3]
                           pr_labels = parts[-2]
                           pr_merged_at = parts[-1]
+                          pr_label = parts[-1]  # Last part is repo label
+                          # Title is everything between number and last 3 parts
                           pr_title = '|'.join(parts[1:-3])
                           
                           category = categorize_pr(pr_labels)
                           date_str = format_date(pr_merged_at)
                           
+                          # Format entry with repo label
                           if date_str:
-                              entry = f"- {date_str} - [#{pr_num}]({pr_url}) {pr_title}"
+                              entry = f"- {date_str} - [{pr_label}#{pr_num}]({pr_url}) {pr_title}"
                           else:
-                              entry = f"- [#{pr_num}]({pr_url}) {pr_title}"
+                              entry = f"- [{pr_label}#{pr_num}]({pr_url}) {pr_title}"
                           
                           categorized_prs[category].append(entry)
-                          print(f"  ✅ Categorized #{pr_num} as {category}")
+                          print(f"  ✅ Categorized {pr_label}#{pr_num} as {category}")
           except FileNotFoundError:
               print("  ℹ️  No PRs file found")
           
@@ -903,7 +1003,7 @@ jobs:
           echo "✅ CHANGELOG.md updated successfully"
 
       # ================================================================
-      # STEP 7: Commit and push changes
+      # STEP 8: Commit and push changes
       # ================================================================
       - name: Commit and push changes
         if: steps.validate.outputs.valid == 'true'
@@ -930,10 +1030,10 @@ jobs:
           echo "✅ Changes pushed successfully"
 
       # ================================================================
-      # STEP 8: Success Summary
+      # STEP 9: Success Summary
       # ================================================================
       - name: Summary
-        if: success()
+        if: success() && steps.validate.outputs.valid == 'true'
         run: |
           echo ""
           echo "╔════════════════════════════════════════╗"
