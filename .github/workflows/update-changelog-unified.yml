@@ -1,0 +1,700 @@
+name: Update CHANGELOG on Tag Creation and PR Merge
+
+on:
+  # Trigger on tag creation
+  push:
+    tags:
+      - 'v*'
+  # Also trigger on release PR merge (fallback)
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+# Workflow-level permissions
+permissions:
+  contents: write
+  pull-requests: read
+  issues: read
+
+jobs:
+  update-changelog:
+    # Run when tag is pushed OR PR is merged
+    if: |
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') ||
+      github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      # ================================================================
+      # STEP 0: Validate and determine trigger type
+      # ================================================================
+      - name: Validate trigger
+        id: validate
+        run: |
+          echo "=========================================="
+          echo "Trigger Validation"
+          echo "=========================================="
+          
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "✅ Triggered by tag push"
+            echo "trigger_type=tag" >> $GITHUB_OUTPUT
+            echo "valid=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            TITLE="${{ github.event.pull_request.title }}"
+            echo "📝 Triggered by PR merge: $TITLE"
+            
+            # Check if title starts with "Release" (case-insensitive) followed by space
+            if [[ "$TITLE" =~ ^[Rr]elease[[:space:]] ]]; then
+              # Check if it's NOT an internal release
+              if [[ ! "$TITLE" =~ [Ii]nternal ]]; then
+                echo "✅ Valid Release PR - will process changelog"
+                echo "trigger_type=pr" >> $GITHUB_OUTPUT
+                echo "valid=true" >> $GITHUB_OUTPUT
+              else
+                echo "⏭️  Skipping Internal Release PR"
+                echo "valid=false" >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "⏭️  Not a Release PR - skipping changelog update"
+              echo "Expected: Title should start with 'Release ' (case-insensitive)"
+              echo "valid=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "❌ Unknown trigger type"
+            echo "valid=false" >> $GITHUB_OUTPUT
+          fi
+          echo "=========================================="
+
+      # ================================================================
+      # STEP 1: Wait for 2 minutes (only for PR trigger)
+      # ================================================================
+      - name: Wait for 2 minutes
+        if: steps.validate.outputs.valid == 'true' && steps.validate.outputs.trigger_type == 'pr'
+        run: |
+          echo "⏳ Waiting 2 minutes for tag creation to complete..."
+          sleep 120
+          echo "✅ Wait complete, proceeding with changelog update"
+
+      # ================================================================
+      # STEP 2: Checkout repository
+      # ================================================================
+      - name: Checkout repository
+        if: steps.validate.outputs.valid == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0  # Fetch full history including all tags
+
+      # ================================================================
+      # STEP 3: Configure Git
+      # ================================================================
+      - name: Configure Git
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          echo "🔧 Configuring Git..."
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "github-actions"
+          echo "✅ Git configured successfully"
+
+      # ================================================================
+      # STEP 4: Extract version from tag or PR
+      # ================================================================
+      - name: Extract current version
+        if: steps.validate.outputs.valid == 'true'
+        id: current
+        run: |
+          echo "=========================================="
+          echo "Extracting Current Version"
+          echo "=========================================="
+          
+          if [ "${{ steps.validate.outputs.trigger_type }}" = "tag" ]; then
+            # Extract from tag
+            CURRENT_TAG="${{ github.ref_name }}"
+            echo "Current Tag: $CURRENT_TAG"
+            
+            # Remove 'v' prefix if present (e.g., v2.2159.005+3589 -> 2.2159.005+3589)
+            VERSION="${CURRENT_TAG#v}"
+            
+            # Get tag creation timestamp
+            TAG_TIMESTAMP=$(git log -1 --format=%aI "$CURRENT_TAG")
+            
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
+            echo "timestamp=$TAG_TIMESTAMP" >> $GITHUB_OUTPUT
+            echo "trigger_type=tag" >> $GITHUB_OUTPUT
+            
+          else
+            # Extract from PR title
+            TITLE="${{ github.event.pull_request.title }}"
+            NUMBER="${{ github.event.pull_request.number }}"
+            URL="${{ github.event.pull_request.html_url }}"
+            
+            # Extract version number
+            VERSION=$(echo "$TITLE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
+            
+            # Get the most recent tag (sorted by creation date)
+            CURRENT_TAG=$(git tag --sort=-creatordate | head -n 1)
+            
+            if [ -z "$CURRENT_TAG" ]; then
+              echo "❌ No tags found in repository"
+              exit 1
+            fi
+            
+            # Get tag creation timestamp
+            TAG_TIMESTAMP=$(git log -1 --format=%aI "$CURRENT_TAG")
+            
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
+            echo "timestamp=$TAG_TIMESTAMP" >> $GITHUB_OUTPUT
+            echo "number=$NUMBER" >> $GITHUB_OUTPUT
+            echo "url=$URL" >> $GITHUB_OUTPUT
+            echo "trigger_type=pr" >> $GITHUB_OUTPUT
+          fi
+          
+          # Extract major.minor (e.g., 2.2159 from 2.2159.005+3589)
+          MAJOR_MINOR=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+          
+          echo "major_minor=$MAJOR_MINOR" >> $GITHUB_OUTPUT
+          echo "main_repo=${{ github.repository }}" >> $GITHUB_OUTPUT
+          
+          echo "✅ Current Version: $VERSION"
+          echo "✅ Major.Minor: $MAJOR_MINOR"
+          echo "✅ Tag Timestamp: $TAG_TIMESTAMP"
+
+      # ================================================================
+      # STEP 5: Find previous tag and its timestamp
+      # ================================================================
+      - name: Find previous tag
+        if: steps.validate.outputs.valid == 'true'
+        id: previous
+        run: |
+          CURRENT_TAG="${{ steps.current.outputs.tag }}"
+          CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
+          
+          echo "=========================================="
+          echo "Searching for previous tag..."
+          echo "=========================================="
+          
+          # Get all tags sorted by creation date (newest first)
+          # Exclude the current tag
+          PREVIOUS_TAG=$(git tag --sort=-creatordate | grep -v "^${CURRENT_TAG}$" | head -n 1)
+          
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "ℹ️  No previous tag found - this is the first release"
+            echo "has_previous=false" >> $GITHUB_OUTPUT
+            echo "is_new_version=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Extract version from previous tag
+          PREVIOUS_VERSION="${PREVIOUS_TAG#v}"
+          PREVIOUS_MAJOR_MINOR=$(echo "$PREVIOUS_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+          
+          # Get previous tag timestamp
+          PREVIOUS_TIMESTAMP=$(git log -1 --format=%aI "$PREVIOUS_TAG")
+          
+          # Determine if this is a new major/minor version
+          if [ "$CURRENT_MAJOR_MINOR" != "$PREVIOUS_MAJOR_MINOR" ]; then
+            echo "is_new_version=true" >> $GITHUB_OUTPUT
+            echo "🆕 New version detected: $PREVIOUS_MAJOR_MINOR -> $CURRENT_MAJOR_MINOR"
+          else
+            echo "is_new_version=false" >> $GITHUB_OUTPUT
+            echo "📝 Same version family: $CURRENT_MAJOR_MINOR"
+          fi
+          
+          echo "has_previous=true" >> $GITHUB_OUTPUT
+          echo "tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+          echo "version=$PREVIOUS_VERSION" >> $GITHUB_OUTPUT
+          echo "timestamp=$PREVIOUS_TIMESTAMP" >> $GITHUB_OUTPUT
+          
+          echo "✅ Previous Tag: $PREVIOUS_TAG"
+          echo "✅ Previous Version: $PREVIOUS_VERSION"
+          echo "✅ Previous Timestamp: $PREVIOUS_TIMESTAMP"
+
+      # ================================================================
+      # STEP 6: Collect PRs from multiple repositories
+      # ================================================================
+      - name: Collect PRs from multiple repositories
+        if: steps.validate.outputs.valid == 'true'
+        id: prs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CURRENT_VERSION="${{ steps.current.outputs.version }}"
+          CURRENT_TIMESTAMP="${{ steps.current.outputs.timestamp }}"
+          HAS_PREVIOUS="${{ steps.previous.outputs.has_previous }}"
+          PREVIOUS_TIMESTAMP="${{ steps.previous.outputs.timestamp }}"
+          
+          # ============================================================
+          # TODO: ADD YOUR REPOSITORIES HERE
+          # Add all repositories you want to collect PRs from
+          # Format: "owner/repo-name:commit-message-pattern:changelog-label"
+          # 
+          # commit-message-pattern: Pattern to find version commits in that repo
+          #   Use {VERSION} placeholder which will be replaced with actual version
+          #   Examples: 
+          #     - "chore: update deps to v{VERSION}"
+          #     - "Release {VERSION}"
+          #     - "bump version to {VERSION}"
+          #
+          # changelog-label: Short name to display in changelog
+          #   Examples: "backend", "api", "plugin"
+          # ============================================================
+          REPOSITORIES=(
+          "${{ steps.current.outputs.main_repo }}::main-repo"  # Main repo (uses tags directly)
+          "priyanshugarg1010/plugin-testing:chore: update nexus deps to v{VERSION}:plugin"
+          # Add more repositories here:
+          # "owner/repo-name:chore: update deps to v{VERSION}:label"
+          # "another-owner/another-repo:Release {VERSION}:another-label"
+          )
+          
+          echo "=========================================="
+          echo "Collecting PRs from Multiple Repositories"
+          echo "=========================================="
+          echo "Number of repositories: ${#REPOSITORIES[@]}"
+          echo ""
+          
+          if [ "$HAS_PREVIOUS" = "true" ]; then
+            echo "📅 Time Range:"
+            echo "  From: $PREVIOUS_TIMESTAMP"
+            echo "  To:   $CURRENT_TIMESTAMP"
+          else
+            echo "📅 Collecting all PRs up to: $CURRENT_TIMESTAMP"
+          fi
+          echo ""
+          
+          # Create empty file for all PRs
+          > all_repos_prs.txt
+          
+          # Loop through each repository
+          for REPO_CONFIG in "${REPOSITORIES[@]}"; do
+            IFS=':' read -r REPO COMMIT_PATTERN LABEL <<< "$REPO_CONFIG"
+            
+            echo "──────────────────────────────────────────"
+            echo "🔍 Processing Repository: $REPO"
+            echo "   Label: $LABEL"
+            echo "──────────────────────────────────────────"
+            
+            # Check if this is the main repo (no commit pattern)
+            if [ -z "$COMMIT_PATTERN" ]; then
+              echo "   Using tag timestamps (main repo)"
+              START_TIME="$PREVIOUS_TIMESTAMP"
+              END_TIME="$CURRENT_TIMESTAMP"
+            else
+              echo "   Commit Pattern: $COMMIT_PATTERN"
+              
+              # Clone or fetch the repo (shallow clone)
+              REPO_NAME=$(basename "$REPO")
+              REPO_DIR="temp_$REPO_NAME"
+              
+              if [ ! -d "$REPO_DIR" ]; then
+                echo "   Cloning $REPO..."
+                gh repo clone "$REPO" "$REPO_DIR" -- --depth 200 || {
+                  echo "   ⚠️  Could not clone $REPO (may not have access)"
+                  continue
+                }
+              fi
+              
+              cd "$REPO_DIR"
+              
+              # Search for current version commit
+              CURRENT_COMMIT_MSG="${COMMIT_PATTERN/\{VERSION\}/$CURRENT_VERSION}"
+              echo "   Looking for current: $CURRENT_COMMIT_MSG"
+              
+              CURRENT_COMMIT=$(git log --all --oneline --grep="$CURRENT_COMMIT_MSG" -n 1 --format="%H")
+              
+              if [ -z "$CURRENT_COMMIT" ]; then
+                echo "   ⚠️  Current version commit not found, trying pattern match..."
+                CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
+                PATTERN="${COMMIT_PATTERN/\{VERSION\}/$CURRENT_MAJOR_MINOR}"
+                CURRENT_COMMIT=$(git log --all --grep="$PATTERN" --format="%H %ct" | head -1 | awk '{print $1}')
+              fi
+              
+              if [ -z "$CURRENT_COMMIT" ]; then
+                echo "   ⚠️  No current version commit found in $REPO"
+                cd ..
+                continue
+              fi
+              
+              END_TIME=$(git log -1 --format=%aI "$CURRENT_COMMIT")
+              echo "   ✅ Current commit: $CURRENT_COMMIT at $END_TIME"
+              
+              # Search for previous version commit
+              if [ "$HAS_PREVIOUS" = "true" ]; then
+                PREVIOUS_VERSION="${{ steps.previous.outputs.version }}"
+                PREVIOUS_COMMIT_MSG="${COMMIT_PATTERN/\{VERSION\}/$PREVIOUS_VERSION}"
+                echo "   Looking for previous: $PREVIOUS_COMMIT_MSG"
+                
+                PREVIOUS_COMMIT=$(git log --all --oneline --grep="$PREVIOUS_COMMIT_MSG" -n 1 --format="%H")
+                
+                if [ -z "$PREVIOUS_COMMIT" ]; then
+                  echo "   ⚠️  Previous version commit not found, using timestamp before current"
+                  CURRENT_TS=$(git log -1 --format=%ct "$CURRENT_COMMIT")
+                  PREVIOUS_MAJOR_MINOR="${{ steps.previous.outputs.major_minor }}"
+                  PATTERN="${COMMIT_PATTERN/\{VERSION\}/$PREVIOUS_MAJOR_MINOR}"
+                  PREVIOUS_COMMIT=$(git log --all --grep="$PATTERN" --format="%H %ct" | \
+                    awk -v current="$CURRENT_TS" '$2 < current {print $1; exit}')
+                fi
+                
+                if [ -n "$PREVIOUS_COMMIT" ]; then
+                  START_TIME=$(git log -1 --format=%aI "$PREVIOUS_COMMIT")
+                  echo "   ✅ Previous commit: $PREVIOUS_COMMIT at $START_TIME"
+                else
+                  echo "   ⚠️  No previous version commit found"
+                  START_TIME=""
+                fi
+              else
+                START_TIME=""
+              fi
+              
+              cd ..
+            fi
+            
+            # Now collect PRs between timestamps
+            if [ -z "$END_TIME" ]; then
+              echo "   ⚠️  No end timestamp, skipping PR collection"
+              continue
+            fi
+            
+            if [ -n "$START_TIME" ]; then
+              echo "   Collecting PRs from $START_TIME to $END_TIME"
+              gh pr list \
+                --repo "$REPO" \
+                --state merged \
+                --base main \
+                --limit 500 \
+                --json number,title,url,labels,mergedAt \
+                --jq '.[] | select(.mergedAt > "'"$START_TIME"'" and .mergedAt <= "'"$END_TIME"'") | "\(.number)|\(.title)|\(.url)|\(.labels | map(.name) | join(","))|\(.mergedAt)|'"$LABEL"'"' >> all_repos_prs.txt || {
+                echo "   ⚠️  Could not fetch PRs from $REPO"
+                continue
+              }
+            else
+              echo "   Collecting all PRs up to $END_TIME"
+              gh pr list \
+                --repo "$REPO" \
+                --state merged \
+                --base main \
+                --limit 500 \
+                --json number,title,url,labels,mergedAt \
+                --jq '.[] | select(.mergedAt <= "'"$END_TIME"'") | "\(.number)|\(.title)|\(.url)|\(.labels | map(.name) | join(","))|\(.mergedAt)|'"$LABEL"'"' >> all_repos_prs.txt || {
+                echo "   ⚠️  Could not fetch PRs from $REPO"
+                continue
+              }
+            fi
+            
+            # Count PRs from this repo
+            REPO_PR_COUNT=$(grep "|$LABEL$" all_repos_prs.txt 2>/dev/null | wc -l | tr -d ' ')
+            echo "   ✅ Found $REPO_PR_COUNT PRs from $REPO"
+            echo ""
+          done
+          
+          echo "=========================================="
+          echo "Filtering and Categorizing PRs"
+          echo "=========================================="
+          
+          # Filter out internal and release PRs
+          > normal_prs.txt
+          
+          if [ -s all_repos_prs.txt ]; then
+            while IFS='|' read -r pr_num pr_title pr_url pr_labels pr_merged_at pr_label || [ -n "$pr_num" ]; do
+              # Skip empty lines
+              [ -z "$pr_num" ] && continue
+              
+              # Skip internal PRs (case-insensitive)
+              if [[ "$pr_title" =~ [Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
+                echo "⏭️  Skipping internal PR #$pr_num from $pr_label"
+                continue
+              fi
+              
+              # Skip release PRs (case-insensitive)
+              if [[ "$pr_title" =~ [Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]]; then
+                echo "⏭️  Skipping release PR #$pr_num from $pr_label"
+                continue
+              fi
+              
+              # Add to normal PRs file with label
+              echo "$pr_num|$pr_title|$pr_url|$pr_labels|$pr_merged_at|$pr_label" >> normal_prs.txt
+              echo "✅ Added PR #$pr_num from $pr_label: $pr_title"
+            done < all_repos_prs.txt
+          else
+            echo "ℹ️  No PRs found in the specified time range across all repositories"
+          fi
+          
+          # Count total PRs
+          TOTAL_PR_COUNT=$(wc -l < normal_prs.txt 2>/dev/null | tr -d ' ')
+          echo ""
+          echo "=========================================="
+          echo "✅ Total PRs collected: $TOTAL_PR_COUNT"
+          echo "=========================================="
+          echo ""
+          echo "pr_count=$TOTAL_PR_COUNT" >> $GITHUB_OUTPUT
+
+      # ================================================================
+      # STEP 7: Update CHANGELOG.md
+      # ================================================================
+      - name: Update CHANGELOG.md
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          CURRENT_VERSION="${{ steps.current.outputs.version }}"
+          CURRENT_TAG="${{ steps.current.outputs.tag }}"
+          IS_NEW_VERSION="${{ steps.previous.outputs.is_new_version }}"
+          PREVIOUS_VERSION="${{ steps.previous.outputs.version }}"
+          MAIN_REPO="${{ steps.current.outputs.main_repo }}"
+          TRIGGER_TYPE="${{ steps.current.outputs.trigger_type }}"
+          
+          echo "=========================================="
+          echo "Updating CHANGELOG.md"
+          echo "Version: $CURRENT_VERSION"
+          echo "Trigger: $TRIGGER_TYPE"
+          echo "Is New Version: $IS_NEW_VERSION"
+          echo "=========================================="
+          
+          # Create CHANGELOG.md if it doesn't exist
+          if [ ! -f CHANGELOG.md ]; then
+            echo "# Changelog" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "📝 Created new CHANGELOG.md"
+          fi
+          
+          export CURRENT_VERSION
+          export CURRENT_TAG
+          export IS_NEW_VERSION
+          export PREVIOUS_VERSION
+          export MAIN_REPO
+          export TRIGGER_TYPE
+          
+          python3 << 'PYTHON_SCRIPT'
+          import re
+          import os
+          from datetime import datetime
+          from collections import defaultdict
+          
+          current_version = os.environ.get('CURRENT_VERSION')
+          current_tag = os.environ.get('CURRENT_TAG')
+          is_new_version = os.environ.get('IS_NEW_VERSION', 'true')
+          previous_version = os.environ.get('PREVIOUS_VERSION', '')
+          main_repo = os.environ.get('MAIN_REPO')
+          trigger_type = os.environ.get('TRIGGER_TYPE', 'tag')
+          
+          # Create tag URL
+          tag_url = f"https://github.com/{main_repo}/releases/tag/{current_tag}"
+          
+          # Label to category mapping
+          CATEGORY_MAP = {
+              'bug-fix': 'Bug Fixes',
+              'bug': 'Bug Fixes',
+              'bugfix': 'Bug Fixes',
+              'fix': 'Bug Fixes',
+              'feature': 'Features',
+              'Feature': 'Features',
+              'features': 'Features',
+              'feat': 'Features',
+              'refactor': 'Refactors',
+              'refactoring': 'Refactors',
+              'enhancement': 'Updates',
+              'enhancements': 'Updates',
+              'documentation': 'Updates',
+              'docs': 'Updates',
+              'chore': 'Updates'
+          }
+          
+          def categorize_pr(labels):
+              """Determine category based on labels"""
+              if not labels:
+                  return 'Updates'
+              
+              labels_lower = [l.lower().strip() for l in labels.split(',') if l]
+              
+              for label in labels_lower:
+                  if label in CATEGORY_MAP:
+                      return CATEGORY_MAP[label]
+              
+              return 'Updates'
+          
+          def format_date(iso_date):
+              """Format ISO date to DD/MM/YY"""
+              if not iso_date:
+                  return ''
+              try:
+                  dt = datetime.fromisoformat(iso_date.replace('Z', '+00:00'))
+                  return dt.strftime('%d/%m/%y')
+              except Exception as e:
+                  print(f"⚠️  Could not parse date '{iso_date}': {e}")
+                  return ''
+          
+          # Read the CHANGELOG
+          with open('CHANGELOG.md', 'r') as f:
+              content = f.read()
+          
+          # Read and categorize PRs from multiple repositories
+          categorized_prs = defaultdict(list)
+          try:
+              with open('normal_prs.txt', 'r') as f:
+                  for line in f:
+                      line = line.strip()
+                      if not line:
+                          continue
+                      parts = line.split('|')
+                      if len(parts) >= 6:
+                          pr_num = parts[0]
+                          pr_url = parts[-3]
+                          pr_labels = parts[-2]
+                          pr_merged_at = parts[-1]
+                          pr_label = parts[-1]  # Last part is repo label
+                          # Title is everything between number and last 3 parts
+                          pr_title = '|'.join(parts[1:-3])
+                          
+                          category = categorize_pr(pr_labels)
+                          date_str = format_date(pr_merged_at)
+                          
+                          # Format entry with repo label
+                          if date_str:
+                              entry = f"- {date_str} - [{pr_label}#{pr_num}]({pr_url}) {pr_title}"
+                          else:
+                              entry = f"- [{pr_label}#{pr_num}]({pr_url}) {pr_title}"
+                          
+                          categorized_prs[category].append(entry)
+                          print(f"  ✅ Categorized {pr_label}#{pr_num} as {category}")
+          except FileNotFoundError:
+              print("  ℹ️  No PRs file found")
+          
+          # Sort categories in desired order
+          category_order = ['Features', 'Bug Fixes', 'Refactors', 'Updates']
+          
+          # Build the PR section
+          pr_section = ""
+          for category in category_order:
+              if category in categorized_prs:
+                  entries = sorted(categorized_prs[category], reverse=True)
+                  pr_section += f"**{category}**\n"
+                  pr_section += "\n".join(entries) + "\n\n"
+          
+          # Extract major.minor for the version label
+          major_minor = '.'.join(current_version.split('.')[:2])
+          
+          # Check if this is a new major.minor version
+          if is_new_version == 'true':
+              print(f"  🆕 Creating NEW version section for {major_minor}")
+              new_section = f"### [{current_version}]({tag_url}) Version {major_minor}\n"
+              if pr_section:
+                  new_section += pr_section
+              
+              if content.strip() in ["# Changelog", "# CHANGELOG"]:
+                  original_title = content.strip()
+                  content = f"{original_title}\n\n{new_section}\n"
+              else:
+                  content = re.sub(
+                      r'(# (?:Changelog|CHANGELOG)\s*\n)',
+                      r'\1\n' + new_section + '\n',
+                      content,
+                      count=1
+                  )
+          else:
+              print(f"  📝 Updating EXISTING version section for {major_minor}")
+              version_pattern = rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}'
+              
+              if re.search(version_pattern, content):
+                  section_match = re.search(
+                      rf'(### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}\n)(.*?)(?=\n### |\Z)',
+                      content,
+                      re.DOTALL
+                  )
+                  
+                  existing_section = ""
+                  if section_match and section_match.group(2):
+                      existing_section = section_match.group(2).strip()
+                  
+                  existing_categorized = defaultdict(list)
+                  current_category = None
+                  for line in existing_section.split('\n'):
+                      if line.startswith('**') and line.endswith('**'):
+                          current_category = line.strip('*')
+                      elif line.startswith('- ') and current_category:
+                          existing_categorized[current_category].append(line)
+                  
+                  for category, entries in categorized_prs.items():
+                      existing_categorized[category].extend(entries)
+                  
+                  merged_section = ""
+                  for category in category_order:
+                      if category in existing_categorized:
+                          unique_entries = list(dict.fromkeys(existing_categorized[category]))
+                          sorted_entries = sorted(unique_entries, reverse=True)
+                          merged_section += f"**{category}**\n"
+                          merged_section += "\n".join(sorted_entries) + "\n\n"
+                  
+                  updated_section = f"### [{current_version}]({tag_url}) Version {major_minor}\n{merged_section}"
+                  
+                  content = re.sub(
+                      rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}\n.*?(?=\n### |\Z)',
+                      updated_section,
+                      content,
+                      count=1,
+                      flags=re.DOTALL
+                  )
+              else:
+                  print(f"  ⚠️  Version section doesn't exist, creating it")
+                  new_section = f"### [{current_version}]({tag_url}) Version {major_minor}\n"
+                  if pr_section:
+                      new_section += pr_section
+                  
+                  content = re.sub(
+                      r'(# (?:Changelog|CHANGELOG)\s*\n)',
+                      r'\1\n' + new_section + '\n',
+                      content,
+                      count=1
+                  )
+          
+          with open('CHANGELOG.md', 'w') as f:
+              f.write(content)
+          
+          total_prs = sum(len(entries) for entries in categorized_prs.values())
+          print(f"\n✅ Successfully added release {current_version} with {total_prs} PRs")
+          PYTHON_SCRIPT
+          
+          echo "✅ CHANGELOG.md updated successfully"
+
+      # ================================================================
+      # STEP 8: Commit and push changes
+      # ================================================================
+      - name: Commit and push changes
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          echo "=========================================="
+          echo "Committing and pushing changes..."
+          echo "=========================================="
+          
+          git add CHANGELOG.md
+          
+          if git diff --staged --quiet; then
+            echo "ℹ️  No changes to commit"
+            exit 0
+          fi
+          
+          echo "📝 Changes detected in CHANGELOG.md"
+          git commit -m "chore: update CHANGELOG for release ${{ steps.current.outputs.version }}" \
+                     -m "Co-Authored-By: GitHub Actions <github-actions@github.com>"
+          
+          echo "✅ Changes committed"
+          echo "⬆️  Pushing to main branch..."
+          git push origin main
+          
+          echo "✅ Changes pushed successfully"
+
+      # ================================================================
+      # STEP 9: Success Summary
+      # ================================================================
+      - name: Summary
+        if: success() && steps.validate.outputs.valid == 'true'
+        run: |
+          echo ""
+          echo "╔════════════════════════════════════════╗"
+          echo "║   ✅ CHANGELOG UPDATE SUCCESSFUL       ║"
+          echo "╚════════════════════════════════════════╝"
+          echo ""
+          echo "📦 Version: ${{ steps.current.outputs.version }}"
+          echo "🏷️  Tag: ${{ steps.current.outputs.tag }}"
+          echo "🔄 Trigger: ${{ steps.current.outputs.trigger_type }}"
+          echo "📝 PRs Included: ${{ steps.prs.outputs.pr_count }}"
+          echo "📚 CHANGELOG.md has been updated"
+          echo ""
