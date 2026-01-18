@@ -1,383 +1,947 @@
-name: Update Nexus CHANGELOG on PR merge
+# name: Update Nexus CHANGELOG on PR merge
+
+# on:
+#   pull_request:
+#     types: [closed]
+#     branches: [main]
+
+# jobs:
+#   update-nexus-changelog:
+#     if: |
+#       github.event.pull_request.merged == true &&
+#       contains(github.event.pull_request.title, 'elease') &&
+#       !contains(github.event.pull_request.title, 'nternal')
+#     runs-on: ubuntu-latest
+#     permissions:
+#       contents: write
+#       pull-requests: read
+#     env:
+#       PLUGIN_REPO: "priyanshugarg1010/plugin-testing"
+
+#     steps:
+#       - name: Wait for main changelog workflow
+#         run: |
+#           echo "Waiting 10 minutes for main changelog workflow to complete..."
+#           sleep 10
+
+#       - name: Checkout main
+#         uses: actions/checkout@v4
+#         with:
+#           ref: main
+#           fetch-depth: 0
+
+#       - name: Configure git
+#         run: |
+#           git config user.name "[bot] Nexus Changelog Updater"
+#           git config user.email "nexus-changelog-bot@github.com"
+
+#       - name: Extract current release version
+#         id: current
+#         run: |
+#           TITLE="${{ github.event.pull_request.title }}"
+#           NUMBER="${{ github.event.pull_request.number }}"
+#           URL="${{ github.event.pull_request.html_url }}"
+
+#           # Extract version number
+#           VERSION=$(echo "$TITLE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
+
+#           # Extract major.minor (e.g., 2.2154 from 2.2154.009+3467)
+#           MAJOR_MINOR=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+
+#           echo "version=$VERSION" >> $GITHUB_OUTPUT
+#           echo "major_minor=$MAJOR_MINOR" >> $GITHUB_OUTPUT
+#           echo "number=$NUMBER" >> $GITHUB_OUTPUT
+#           echo "url=$URL" >> $GITHUB_OUTPUT
+
+#           echo "Current Release: $VERSION"
+#           echo "Major.Minor: $MAJOR_MINOR"
+
+#       - name: Find previous release
+#         id: previous
+#         env:
+#           GH_TOKEN: ${{ github.token }}
+#         run: |
+#           CURRENT_PR_NUMBER="${{ steps.current.outputs.number }}"
+#           CURRENT_VERSION="${{ steps.current.outputs.version }}"
+#           CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
+
+#           echo "Searching for previous release PR..."
+
+#           # Search for the most recent release PR before current one
+#           PREVIOUS_RELEASE_PR=""
+#           PREVIOUS_VERSION=""
+#           PREVIOUS_MAJOR_MINOR=""
+
+#           gh pr list \
+#             --state merged \
+#             --base main \
+#             --limit 100 \
+#             --json number,title,mergedAt,url \
+#             --jq 'sort_by(.mergedAt) | reverse | .[] | select(.number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > prs.txt
+
+#           while IFS='|' read -r pr_num pr_title pr_url; do
+#             if [[ "$pr_title" =~ ^[Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]] && ! [[ "$pr_title" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
+#               PREVIOUS_RELEASE_PR="$pr_num"
+#               PREVIOUS_VERSION=$(echo "$pr_title" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
+#               PREVIOUS_MAJOR_MINOR=$(echo "$PREVIOUS_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+#               echo "Found previous release: PR #$PREVIOUS_RELEASE_PR - $PREVIOUS_VERSION"
+#               break
+#             fi
+#           done < prs.txt
+
+#           echo "previous_version=$PREVIOUS_VERSION" >> $GITHUB_OUTPUT
+#           echo "previous_major_minor=$PREVIOUS_MAJOR_MINOR" >> $GITHUB_OUTPUT
+
+#       - name: Search plugin-testing commits
+#         id: nexus_commits
+#         env:
+#           GH_TOKEN: ${{ github.token }}
+#         run: |
+#           CURRENT_VERSION="${{ steps.current.outputs.version }}"
+#           CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
+#           PREVIOUS_VERSION="${{ steps.previous.outputs.previous_version }}"
+
+#           echo "Searching $PLUGIN_REPO repo for version commits..."
+
+#           # Clone or fetch plugin-testing repo (shallow clone with last 200 commits)
+#           REPO_NAME=$(basename "$PLUGIN_REPO")
+#           if [ ! -d "$REPO_NAME" ]; then
+#             gh repo clone "$PLUGIN_REPO" -- --depth 200
+#           fi
+
+#           cd "$REPO_NAME"
+
+#           # Search for current version commit
+#           CURRENT_COMMIT=""
+#           CURRENT_TIMESTAMP=""
+#           COMMIT_PATTERN="chore: update nexus deps to v${CURRENT_VERSION}"
+
+#           echo "Looking for: $COMMIT_PATTERN"
+
+#           CURRENT_COMMIT=$(git log --all --oneline --grep="$COMMIT_PATTERN" -n 1 --format="%H")
+#           if [ -n "$CURRENT_COMMIT" ]; then
+#             CURRENT_TIMESTAMP=$(git log -1 --format="%ct" "$CURRENT_COMMIT")
+#             echo "Found current version commit: $CURRENT_COMMIT at $(date -d @$CURRENT_TIMESTAMP)"
+#           else
+#             echo "⚠️  Exact current version commit not found, searching for closest version..."
+            
+#             # Find the most recent version commit for same major.minor
+#             FALLBACK_RESULT=$(git log --all --grep="chore: update nexus deps to v${CURRENT_MAJOR_MINOR}" --format="%H %ct" | head -1)
+            
+#             if [ -n "$FALLBACK_RESULT" ]; then
+#               CURRENT_COMMIT=$(echo "$FALLBACK_RESULT" | awk '{print $1}')
+#               CURRENT_TIMESTAMP=$(echo "$FALLBACK_RESULT" | awk '{print $2}')
+#               echo "Found closest current version: $CURRENT_COMMIT at $(date -d @$CURRENT_TIMESTAMP)"
+#             else
+#               echo "⚠️  No version commits found for $CURRENT_MAJOR_MINOR"
+#             fi
+#           fi
+
+#           # Search for previous version commit
+#           PREVIOUS_COMMIT=""
+#           PREVIOUS_TIMESTAMP=""
+
+#           if [ -n "$PREVIOUS_VERSION" ]; then
+#             COMMIT_PATTERN="chore: update nexus deps to v${PREVIOUS_VERSION}"
+#             echo "Looking for: $COMMIT_PATTERN"
+            
+#             PREVIOUS_COMMIT=$(git log --all --oneline --grep="$COMMIT_PATTERN" -n 1 --format="%H")
+#             if [ -n "$PREVIOUS_COMMIT" ]; then
+#               PREVIOUS_TIMESTAMP=$(git log -1 --format="%ct" "$PREVIOUS_COMMIT")
+#               echo "Found previous version commit: $PREVIOUS_COMMIT at $(date -d @$PREVIOUS_TIMESTAMP)"
+#             else
+#               echo "⚠️  Exact previous version commit not found, searching for closest earlier version..."
+              
+#               # Find the most recent version commit before current timestamp for same major.minor
+#               if [ -n "$CURRENT_TIMESTAMP" ]; then
+#                 # Get all version commits for this major.minor, sorted by timestamp desc
+#                 FALLBACK_RESULT=$(git log --all --grep="chore: update nexus deps to v${CURRENT_MAJOR_MINOR}" --format="%H %ct" | \
+#                   awk -v current="$CURRENT_TIMESTAMP" '$2 < current {print $1" "$2; exit}')
+                
+#                 if [ -n "$FALLBACK_RESULT" ]; then
+#                   PREVIOUS_COMMIT=$(echo "$FALLBACK_RESULT" | awk '{print $1}')
+#                   PREVIOUS_TIMESTAMP=$(echo "$FALLBACK_RESULT" | awk '{print $2}')
+#                   echo "Found closest previous version: $PREVIOUS_COMMIT at $(date -d @$PREVIOUS_TIMESTAMP)"
+#                 else
+#                   echo "⚠️  No earlier version commits found for $CURRENT_MAJOR_MINOR"
+#                 fi
+#               fi
+#             fi
+#           fi
+
+#           cd ..
+
+#           echo "current_commit=$CURRENT_COMMIT" >> $GITHUB_OUTPUT
+#           echo "current_timestamp=$CURRENT_TIMESTAMP" >> $GITHUB_OUTPUT
+#           echo "previous_commit=$PREVIOUS_COMMIT" >> $GITHUB_OUTPUT
+#           echo "previous_timestamp=$PREVIOUS_TIMESTAMP" >> $GITHUB_OUTPUT
+
+#       - name: Collect PRs from plugin-testing
+#         id: nexus_prs
+#         env:
+#           GH_TOKEN: ${{ github.token }}
+#         run: |
+#           CURRENT_TIMESTAMP="${{ steps.nexus_commits.outputs.current_timestamp }}"
+#           PREVIOUS_TIMESTAMP="${{ steps.nexus_commits.outputs.previous_timestamp }}"
+
+#           if [ -z "$CURRENT_TIMESTAMP" ] || [ -z "$PREVIOUS_TIMESTAMP" ]; then
+#             echo "⚠️  Missing timestamps, cannot collect PRs"
+#             echo "pr_count=0" >> $GITHUB_OUTPUT
+#             touch nexus_prs.txt
+#             exit 0
+#           fi
+
+#           # Check if timestamps are the same
+#           if [ "$CURRENT_TIMESTAMP" = "$PREVIOUS_TIMESTAMP" ]; then
+#             echo "⚠️  Current and previous timestamps are the same - no PRs to collect"
+#             echo "pr_count=0" >> $GITHUB_OUTPUT
+#             touch nexus_prs.txt
+#             exit 0
+#           fi
+
+#           echo "Collecting PRs from $PLUGIN_REPO between timestamps..."
+#           echo "Current timestamp: $CURRENT_TIMESTAMP"
+#           echo "Previous timestamp: $PREVIOUS_TIMESTAMP"
+#           echo "From: $(date -d @$PREVIOUS_TIMESTAMP)"
+#           echo "To: $(date -d @$CURRENT_TIMESTAMP)"
+
+#           # Convert to ISO format for GitHub API
+#           START_DATE=$(date -d @"$PREVIOUS_TIMESTAMP" -u +"%Y-%m-%dT%H:%M:%SZ")
+#           END_DATE=$(date -d @"$CURRENT_TIMESTAMP" -u +"%Y-%m-%dT%H:%M:%SZ")
+
+#           # Get PRs merged between these timestamps
+#           gh pr list \
+#             --repo "$PLUGIN_REPO" \
+#             --state merged \
+#             --limit 500 \
+#             --json number,title,url,mergedAt | \
+#           jq -r --arg start "$START_DATE" --arg end "$END_DATE" \
+#             '.[] | select(.mergedAt >= $start and .mergedAt <= $end) | "\(.number)|\(.title)|\(.url)"' > nexus_prs_raw.txt
+
+#           # Filter out internal PRs
+#           > nexus_prs.txt  # Create empty file
+
+#           while IFS='|' read -r pr_num pr_title pr_url; do
+#             # Skip internal PRs
+#             if [[ "$pr_title" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
+#               echo "Skipping internal PR #$pr_num: $pr_title"
+#               continue
+#             fi
+            
+#             # Skip release PRs
+#             if [[ "$pr_title" =~ ^[Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]]; then
+#               continue
+#             fi
+            
+#             # Add to file (one per line)
+#             echo "$pr_num|$pr_title|$pr_url" >> nexus_prs.txt
+#           done < nexus_prs_raw.txt
+
+#           # Count PRs
+#           PR_COUNT=$(wc -l < nexus_prs.txt | tr -d ' ')
+#           echo "Found $PR_COUNT PRs from $PLUGIN_REPO"
+#           echo "pr_count=$PR_COUNT" >> $GITHUB_OUTPUT
+
+#       - name: Update NEXUS_CHANGELOG.md
+#         run: |
+#           CURRENT_VERSION="${{ steps.current.outputs.version }}"
+#           CURRENT_PR_URL="${{ steps.current.outputs.url }}"
+#           CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
+#           PREVIOUS_VERSION="${{ steps.previous.outputs.previous_version }}"
+#           PREVIOUS_MAJOR_MINOR="${{ steps.previous.outputs.previous_major_minor }}"
+
+#           # Determine if this is a new version
+#           IS_NEW_VERSION="false"
+#           if [ -z "$PREVIOUS_MAJOR_MINOR" ]; then
+#             IS_NEW_VERSION="true"
+#           elif [ "$CURRENT_MAJOR_MINOR" != "$PREVIOUS_MAJOR_MINOR" ]; then
+#             IS_NEW_VERSION="true"
+#           fi
+
+#           # Create NEXUS_CHANGELOG.md if it doesn't exist
+#           if [ ! -f NEXUS_CHANGELOG.md ]; then
+#             echo "# Nexus Changelog" > NEXUS_CHANGELOG.md
+#             echo "" >> NEXUS_CHANGELOG.md
+#           fi
+
+#           export CURRENT_VERSION
+#           export CURRENT_PR_URL
+#           export IS_NEW_VERSION
+#           export PREVIOUS_VERSION
+
+#           python3 << 'PYTHON_SCRIPT'
+#           import re
+#           import os
+
+#           current_version = os.environ.get('CURRENT_VERSION')
+#           current_pr_url = os.environ.get('CURRENT_PR_URL')
+#           is_new_version = os.environ.get('IS_NEW_VERSION')
+#           previous_version = os.environ.get('PREVIOUS_VERSION')
+
+#           # Read the CHANGELOG
+#           with open('NEXUS_CHANGELOG.md', 'r') as f:
+#               content = f.read()
+
+#           # Read the collected PRs from scapia-nexus
+#           pr_entries = []
+#           try:
+#               with open('nexus_prs.txt', 'r') as f:
+#                   for line in f:
+#                       line = line.strip()
+#                       if not line:
+#                           continue
+#                       parts = line.split('|')
+#                       if len(parts) >= 3:
+#                           pr_num = parts[0]
+#                           pr_url = parts[2]
+#                           pr_title = '|'.join(parts[1:-1]) if len(parts) > 3 else parts[1]
+#                           # Use repo name from environment or default
+#                           pr_entries.append(f"- [plugin-testing#{pr_num}]({pr_url}) {pr_title}")
+#           except FileNotFoundError:
+#               pass
+
+#           # Reverse to show newest first
+#           pr_entries.reverse()
+
+#           # Extract major.minor for the version label
+#           major_minor = '.'.join(current_version.split('.')[:2])
+
+#           # Check if this is a new major.minor version
+#           if is_new_version == 'true':
+#               # Create NEW version section
+#               new_section = f"### [{current_version}]({current_pr_url}) Version {major_minor} (Nexus)\n"
+#               if pr_entries:
+#                   new_section += "\n".join(pr_entries) + "\n"
+#               else:
+#                   new_section += "No PRs found in plugin-testing for this release.\n"
+              
+#               # Check if we already have content
+#               if content.strip() == "# Nexus Changelog":
+#                   # First release
+#                   content = f"# Nexus Changelog\n\n{new_section}\n"
+#               else:
+#                   # Insert after the title
+#                   content = re.sub(
+#                       r'(# Nexus Changelog\s*\n)',
+#                       r'\1\n' + new_section + '\n',
+#                       content,
+#                       count=1
+#                   )
+#           else:
+#               # Same major.minor version - REPLACE existing section
+#               version_pattern = rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)} \(Nexus\)'
+              
+#               # Build the updated section
+#               updated_section = f"### [{current_version}]({current_pr_url}) Version {major_minor} (Nexus)\n"
+#               if pr_entries:
+#                   updated_section += "\n".join(pr_entries) + "\n"
+#               else:
+#                   updated_section += "No PRs found in plugin-testing for this release.\n"
+              
+#               if re.search(version_pattern, content):
+#                   # Replace the existing section completely
+#                   content = re.sub(
+#                       rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)} \(Nexus\)\n(?:(?:- \[.*?\n)|(?:No PRs.*?\n))*',
+#                       updated_section,
+#                       content,
+#                       count=1
+#                   )
+#               else:
+#                   # Version section doesn't exist, create it
+#                   content = re.sub(
+#                       r'(# Nexus Changelog\s*\n)',
+#                       r'\1\n' + updated_section + '\n',
+#                       content,
+#                       count=1
+#                   )
+
+#           with open('NEXUS_CHANGELOG.md', 'w') as f:
+#               f.write(content)
+
+#           print(f"✓ Added Nexus release {current_version} with {len(pr_entries)} PRs from plugin-testing")
+#           PYTHON_SCRIPT
+
+#       - name: Commit and push changes
+#         run: |
+#           git add NEXUS_CHANGELOG.md
+
+#           # Check if there are changes to commit
+#           if git diff --staged --quiet; then
+#             echo "No changes to commit"
+#             exit 0
+#           fi
+
+#           git commit -m "chore: update NEXUS_CHANGELOG for release ${{ steps.current.outputs.version }}" -m "Co-Authored-By: Warp <agent@warp.dev>"
+
+#           # Only push if not running in act (local testing)
+#           if [ -z "$ACT" ]; then
+#             git push origin main
+#           else
+#             echo "Running in act - skipping push"
+#             echo "Changes committed locally:"
+#             git log -1 --stat
+#           fi
+
+name: Update CHANGELOG on Release PR Merge
 
 on:
   pull_request:
     types: [closed]
-    branches: [main]
+    branches: 
+      - master
+
+# Workflow-level permissions
+permissions:
+  contents: write        # Required for pushing changes
+  pull-requests: read    # Required for reading PR data
+  issues: read          # Required for reading issues
 
 jobs:
-  update-nexus-changelog:
-    if: |
-      github.event.pull_request.merged == true &&
-      contains(github.event.pull_request.title, 'elease') &&
-      !contains(github.event.pull_request.title, 'nternal')
+  update-changelog:
+    # Only run when PR is merged
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: read
-    env:
-      PLUGIN_REPO: "priyanshugarg1010/plugin-testing"
 
     steps:
-      - name: Wait for main changelog workflow
-        run: |
-          echo "Waiting 10 minutes for main changelog workflow to complete..."
-          sleep 10
-
-      - name: Checkout main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Configure git
-        run: |
-          git config user.name "[bot] Nexus Changelog Updater"
-          git config user.email "nexus-changelog-bot@github.com"
-
-      - name: Extract current release version
-        id: current
+      # ================================================================
+      # STEP 0: Validate PR title matches Release pattern
+      # ================================================================
+      - name: Validate PR title
+        id: validate
         run: |
           TITLE="${{ github.event.pull_request.title }}"
-          NUMBER="${{ github.event.pull_request.number }}"
-          URL="${{ github.event.pull_request.html_url }}"
+          echo "=========================================="
+          echo "PR Title Validation"
+          echo "=========================================="
+          echo "Title: $TITLE"
+          echo ""
+          
+          # Check if title starts with "Release" (case-insensitive) followed by space
+          if [[ "$TITLE" =~ ^[Rr]elease[[:space:]] ]]; then
+            # Check if it's NOT an internal release
+            if [[ ! "$TITLE" =~ [Ii]nternal ]]; then
+              echo "✅ Valid Release PR - will process changelog"
+              echo "valid=true" >> $GITHUB_OUTPUT
+            else
+              echo "⏭️  Skipping Internal Release PR"
+              echo "valid=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "⏭️  Not a Release PR - skipping changelog update"
+            echo "Expected: Title should start with 'Release ' (case-insensitive)"
+            echo "valid=false" >> $GITHUB_OUTPUT
+          fi
+          echo "=========================================="
 
-          # Extract version number
-          VERSION=$(echo "$TITLE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
+      # ================================================================
+      # STEP 1: Wait for 2 minutes before processing
+      # ================================================================
+      - name: Wait for 2 minutes
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          echo "⏳ Waiting 2 minutes for tag creation to complete..."
+          sleep 120
+          echo "✅ Wait complete, proceeding with changelog update"
 
-          # Extract major.minor (e.g., 2.2154 from 2.2154.009+3467)
+      # ================================================================
+      # STEP 2: Checkout master branch
+      # ================================================================
+      - name: Checkout repository
+        if: steps.validate.outputs.valid == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0  # Fetch full history including all tags
+
+      # ================================================================
+      # STEP 2: Configure Git
+      # ================================================================
+      - name: Configure Git
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          echo "🔧 Configuring Git..."
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "github-actions"
+          echo "✅ Git configured successfully"
+
+      # ================================================================
+      # STEP 3: Extract version from latest tag
+      # ================================================================
+      - name: Extract current tag version
+        if: steps.validate.outputs.valid == 'true'
+        id: current
+        run: |
+          # Main repository (where this workflow runs)
+          MAIN_REPO="${{ github.repository }}"
+          
+          echo "=========================================="
+          echo "Finding Latest Tag"
+          echo "Main Repository: $MAIN_REPO"
+          echo "=========================================="
+          
+          # Get the most recent tag (sorted by creation date)
+          CURRENT_TAG=$(git tag --sort=-creatordate | head -n 1)
+          
+          if [ -z "$CURRENT_TAG" ]; then
+            echo "❌ No tags found in repository"
+            exit 1
+          fi
+          
+          echo "Latest Tag: $CURRENT_TAG"
+          
+          # Remove 'v' prefix if present (e.g., v2.2159.005+3589 -> 2.2159.005+3589)
+          VERSION="${CURRENT_TAG#v}"
+          
+          # Validate version format
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            echo "Expected format: [v]X.Y.Z[+BUILD]"
+            exit 1
+          fi
+          
+          # Extract major.minor (e.g., 2.2159 from 2.2159.005+3589)
           MAJOR_MINOR=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')
-
+          
+          # Get tag creation timestamp
+          TAG_TIMESTAMP=$(git log -1 --format=%aI "$CURRENT_TAG")
+          
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "major_minor=$MAJOR_MINOR" >> $GITHUB_OUTPUT
-          echo "number=$NUMBER" >> $GITHUB_OUTPUT
-          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
+          echo "timestamp=$TAG_TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "main_repo=$MAIN_REPO" >> $GITHUB_OUTPUT
+          
+          echo "✅ Current Version: $VERSION"
+          echo "✅ Major.Minor: $MAJOR_MINOR"
+          echo "✅ Tag Timestamp: $TAG_TIMESTAMP"
 
-          echo "Current Release: $VERSION"
-          echo "Major.Minor: $MAJOR_MINOR"
-
-      - name: Find previous release
+      # ================================================================
+      # STEP 4: Find previous tag and its timestamp
+      # ================================================================
+      - name: Find previous tag
+        if: steps.validate.outputs.valid == 'true'
         id: previous
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          CURRENT_PR_NUMBER="${{ steps.current.outputs.number }}"
-          CURRENT_VERSION="${{ steps.current.outputs.version }}"
+          CURRENT_TAG="${{ steps.current.outputs.tag }}"
           CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
-
-          echo "Searching for previous release PR..."
-
-          # Search for the most recent release PR before current one
-          PREVIOUS_RELEASE_PR=""
-          PREVIOUS_VERSION=""
-          PREVIOUS_MAJOR_MINOR=""
-
-          gh pr list \
-            --state merged \
-            --base main \
-            --limit 100 \
-            --json number,title,mergedAt,url \
-            --jq 'sort_by(.mergedAt) | reverse | .[] | select(.number < '$CURRENT_PR_NUMBER') | "\(.number)|\(.title)|\(.url)"' > prs.txt
-
-          while IFS='|' read -r pr_num pr_title pr_url; do
-            if [[ "$pr_title" =~ ^[Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]] && ! [[ "$pr_title" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
-              PREVIOUS_RELEASE_PR="$pr_num"
-              PREVIOUS_VERSION=$(echo "$pr_title" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+')
-              PREVIOUS_MAJOR_MINOR=$(echo "$PREVIOUS_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
-              echo "Found previous release: PR #$PREVIOUS_RELEASE_PR - $PREVIOUS_VERSION"
-              break
-            fi
-          done < prs.txt
-
-          echo "previous_version=$PREVIOUS_VERSION" >> $GITHUB_OUTPUT
-          echo "previous_major_minor=$PREVIOUS_MAJOR_MINOR" >> $GITHUB_OUTPUT
-
-      - name: Search plugin-testing commits
-        id: nexus_commits
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          CURRENT_VERSION="${{ steps.current.outputs.version }}"
-          CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
-          PREVIOUS_VERSION="${{ steps.previous.outputs.previous_version }}"
-
-          echo "Searching $PLUGIN_REPO repo for version commits..."
-
-          # Clone or fetch plugin-testing repo (shallow clone with last 200 commits)
-          REPO_NAME=$(basename "$PLUGIN_REPO")
-          if [ ! -d "$REPO_NAME" ]; then
-            gh repo clone "$PLUGIN_REPO" -- --depth 200
+          
+          echo "=========================================="
+          echo "Searching for previous tag..."
+          echo "=========================================="
+          
+          # Get all tags sorted by creation date (newest first)
+          # Exclude the current tag
+          PREVIOUS_TAG=$(git tag --sort=-creatordate | grep -v "^${CURRENT_TAG}$" | head -n 1)
+          
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "ℹ️  No previous tag found - this is the first release"
+            echo "has_previous=false" >> $GITHUB_OUTPUT
+            echo "is_new_version=true" >> $GITHUB_OUTPUT
+            exit 0
           fi
-
-          cd "$REPO_NAME"
-
-          # Search for current version commit
-          CURRENT_COMMIT=""
-          CURRENT_TIMESTAMP=""
-          COMMIT_PATTERN="chore: update nexus deps to v${CURRENT_VERSION}"
-
-          echo "Looking for: $COMMIT_PATTERN"
-
-          CURRENT_COMMIT=$(git log --all --oneline --grep="$COMMIT_PATTERN" -n 1 --format="%H")
-          if [ -n "$CURRENT_COMMIT" ]; then
-            CURRENT_TIMESTAMP=$(git log -1 --format="%ct" "$CURRENT_COMMIT")
-            echo "Found current version commit: $CURRENT_COMMIT at $(date -d @$CURRENT_TIMESTAMP)"
+          
+          # Extract version from previous tag
+          PREVIOUS_VERSION="${PREVIOUS_TAG#v}"
+          PREVIOUS_MAJOR_MINOR=$(echo "$PREVIOUS_VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+          
+          # Get previous tag timestamp
+          PREVIOUS_TIMESTAMP=$(git log -1 --format=%aI "$PREVIOUS_TAG")
+          
+          # Determine if this is a new major/minor version
+          if [ "$CURRENT_MAJOR_MINOR" != "$PREVIOUS_MAJOR_MINOR" ]; then
+            echo "is_new_version=true" >> $GITHUB_OUTPUT
+            echo "🆕 New version detected: $PREVIOUS_MAJOR_MINOR -> $CURRENT_MAJOR_MINOR"
           else
-            echo "⚠️  Exact current version commit not found, searching for closest version..."
-            
-            # Find the most recent version commit for same major.minor
-            FALLBACK_RESULT=$(git log --all --grep="chore: update nexus deps to v${CURRENT_MAJOR_MINOR}" --format="%H %ct" | head -1)
-            
-            if [ -n "$FALLBACK_RESULT" ]; then
-              CURRENT_COMMIT=$(echo "$FALLBACK_RESULT" | awk '{print $1}')
-              CURRENT_TIMESTAMP=$(echo "$FALLBACK_RESULT" | awk '{print $2}')
-              echo "Found closest current version: $CURRENT_COMMIT at $(date -d @$CURRENT_TIMESTAMP)"
-            else
-              echo "⚠️  No version commits found for $CURRENT_MAJOR_MINOR"
-            fi
+            echo "is_new_version=false" >> $GITHUB_OUTPUT
+            echo "📝 Same version family: $CURRENT_MAJOR_MINOR"
           fi
+          
+          echo "has_previous=true" >> $GITHUB_OUTPUT
+          echo "tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+          echo "version=$PREVIOUS_VERSION" >> $GITHUB_OUTPUT
+          echo "timestamp=$PREVIOUS_TIMESTAMP" >> $GITHUB_OUTPUT
+          
+          echo "✅ Previous Tag: $PREVIOUS_TAG"
+          echo "✅ Previous Version: $PREVIOUS_VERSION"
+          echo "✅ Previous Timestamp: $PREVIOUS_TIMESTAMP"
 
-          # Search for previous version commit
-          PREVIOUS_COMMIT=""
-          PREVIOUS_TIMESTAMP=""
-
-          if [ -n "$PREVIOUS_VERSION" ]; then
-            COMMIT_PATTERN="chore: update nexus deps to v${PREVIOUS_VERSION}"
-            echo "Looking for: $COMMIT_PATTERN"
-            
-            PREVIOUS_COMMIT=$(git log --all --oneline --grep="$COMMIT_PATTERN" -n 1 --format="%H")
-            if [ -n "$PREVIOUS_COMMIT" ]; then
-              PREVIOUS_TIMESTAMP=$(git log -1 --format="%ct" "$PREVIOUS_COMMIT")
-              echo "Found previous version commit: $PREVIOUS_COMMIT at $(date -d @$PREVIOUS_TIMESTAMP)"
-            else
-              echo "⚠️  Exact previous version commit not found, searching for closest earlier version..."
-              
-              # Find the most recent version commit before current timestamp for same major.minor
-              if [ -n "$CURRENT_TIMESTAMP" ]; then
-                # Get all version commits for this major.minor, sorted by timestamp desc
-                FALLBACK_RESULT=$(git log --all --grep="chore: update nexus deps to v${CURRENT_MAJOR_MINOR}" --format="%H %ct" | \
-                  awk -v current="$CURRENT_TIMESTAMP" '$2 < current {print $1" "$2; exit}')
-                
-                if [ -n "$FALLBACK_RESULT" ]; then
-                  PREVIOUS_COMMIT=$(echo "$FALLBACK_RESULT" | awk '{print $1}')
-                  PREVIOUS_TIMESTAMP=$(echo "$FALLBACK_RESULT" | awk '{print $2}')
-                  echo "Found closest previous version: $PREVIOUS_COMMIT at $(date -d @$PREVIOUS_TIMESTAMP)"
-                else
-                  echo "⚠️  No earlier version commits found for $CURRENT_MAJOR_MINOR"
-                fi
-              fi
-            fi
-          fi
-
-          cd ..
-
-          echo "current_commit=$CURRENT_COMMIT" >> $GITHUB_OUTPUT
-          echo "current_timestamp=$CURRENT_TIMESTAMP" >> $GITHUB_OUTPUT
-          echo "previous_commit=$PREVIOUS_COMMIT" >> $GITHUB_OUTPUT
-          echo "previous_timestamp=$PREVIOUS_TIMESTAMP" >> $GITHUB_OUTPUT
-
-      - name: Collect PRs from plugin-testing
-        id: nexus_prs
+      # ================================================================
+      # STEP 5: Collect PRs from multiple repositories
+      # ================================================================
+      - name: Collect PRs from multiple repositories
+        if: steps.validate.outputs.valid == 'true'
+        id: prs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          CURRENT_TIMESTAMP="${{ steps.nexus_commits.outputs.current_timestamp }}"
-          PREVIOUS_TIMESTAMP="${{ steps.nexus_commits.outputs.previous_timestamp }}"
-
-          if [ -z "$CURRENT_TIMESTAMP" ] || [ -z "$PREVIOUS_TIMESTAMP" ]; then
-            echo "⚠️  Missing timestamps, cannot collect PRs"
-            echo "pr_count=0" >> $GITHUB_OUTPUT
-            touch nexus_prs.txt
-            exit 0
+          CURRENT_TIMESTAMP="${{ steps.current.outputs.timestamp }}"
+          HAS_PREVIOUS="${{ steps.previous.outputs.has_previous }}"
+          PREVIOUS_TIMESTAMP="${{ steps.previous.outputs.timestamp }}"
+          
+          # ============================================================
+          # TODO: ADD YOUR REPOSITORIES HERE
+          # Add all repositories you want to collect PRs from
+          # Format: "owner/repo-name"
+          # ============================================================
+          REPOSITORIES=(
+            "priyanshugarg1010/plugin-testing"
+            # "your-org/repo1"           # Example: Add your first repo
+          )
+          
+          echo "=========================================="
+          echo "Collecting PRs from Multiple Repositories"
+          echo "=========================================="
+          echo "Number of repositories: ${#REPOSITORIES[@]}"
+          echo ""
+          
+          if [ "$HAS_PREVIOUS" = "true" ]; then
+            echo "📅 Time Range:"
+            echo "  From: $PREVIOUS_TIMESTAMP"
+            echo "  To:   $CURRENT_TIMESTAMP"
+          else
+            echo "📅 Collecting all PRs up to: $CURRENT_TIMESTAMP"
           fi
-
-          # Check if timestamps are the same
-          if [ "$CURRENT_TIMESTAMP" = "$PREVIOUS_TIMESTAMP" ]; then
-            echo "⚠️  Current and previous timestamps are the same - no PRs to collect"
-            echo "pr_count=0" >> $GITHUB_OUTPUT
-            touch nexus_prs.txt
-            exit 0
-          fi
-
-          echo "Collecting PRs from $PLUGIN_REPO between timestamps..."
-          echo "Current timestamp: $CURRENT_TIMESTAMP"
-          echo "Previous timestamp: $PREVIOUS_TIMESTAMP"
-          echo "From: $(date -d @$PREVIOUS_TIMESTAMP)"
-          echo "To: $(date -d @$CURRENT_TIMESTAMP)"
-
-          # Convert to ISO format for GitHub API
-          START_DATE=$(date -d @"$PREVIOUS_TIMESTAMP" -u +"%Y-%m-%dT%H:%M:%SZ")
-          END_DATE=$(date -d @"$CURRENT_TIMESTAMP" -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          # Get PRs merged between these timestamps
-          gh pr list \
-            --repo "$PLUGIN_REPO" \
-            --state merged \
-            --limit 500 \
-            --json number,title,url,mergedAt | \
-          jq -r --arg start "$START_DATE" --arg end "$END_DATE" \
-            '.[] | select(.mergedAt >= $start and .mergedAt <= $end) | "\(.number)|\(.title)|\(.url)"' > nexus_prs_raw.txt
-
-          # Filter out internal PRs
-          > nexus_prs.txt  # Create empty file
-
-          while IFS='|' read -r pr_num pr_title pr_url; do
-            # Skip internal PRs
-            if [[ "$pr_title" =~ ^[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
-              echo "Skipping internal PR #$pr_num: $pr_title"
-              continue
+          echo ""
+          
+          # Create empty file for all PRs
+          > all_repos_prs.txt
+          
+          # Loop through each repository
+          for REPO in "${REPOSITORIES[@]}"; do
+            echo "──────────────────────────────────────────"
+            echo "🔍 Processing Repository: $REPO"
+            echo "──────────────────────────────────────────"
+            
+            # Get PRs from this repository
+            if [ "$HAS_PREVIOUS" = "true" ]; then
+              gh pr list \
+                --repo "$REPO" \
+                --state merged \
+                --base master \
+                --limit 500 \
+                --json number,title,url,labels,mergedAt \
+                --jq '.[] | select(.mergedAt > "'"$PREVIOUS_TIMESTAMP"'" and .mergedAt <= "'"$CURRENT_TIMESTAMP"'") | "\(.number)|\(.title)|\(.url)|\(.labels | map(.name) | join(","))|\(.mergedAt)|'"$REPO"'"' >> all_repos_prs.txt || {
+                echo "⚠️  Warning: Could not fetch PRs from $REPO (may not have access)"
+                continue
+              }
+            else
+              gh pr list \
+                --repo "$REPO" \
+                --state merged \
+                --base master \
+                --limit 500 \
+                --json number,title,url,labels,mergedAt \
+                --jq '.[] | select(.mergedAt <= "'"$CURRENT_TIMESTAMP"'") | "\(.number)|\(.title)|\(.url)|\(.labels | map(.name) | join(","))|\(.mergedAt)|'"$REPO"'"' >> all_repos_prs.txt || {
+                echo "⚠️  Warning: Could not fetch PRs from $REPO (may not have access)"
+                continue
+              }
             fi
             
-            # Skip release PRs
-            if [[ "$pr_title" =~ ^[Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]]; then
-              continue
-            fi
-            
-            # Add to file (one per line)
-            echo "$pr_num|$pr_title|$pr_url" >> nexus_prs.txt
-          done < nexus_prs_raw.txt
+            # Count PRs from this repo
+            REPO_PR_COUNT=$(grep "|$REPO$" all_repos_prs.txt | wc -l | tr -d ' ')
+            echo "  ✅ Found $REPO_PR_COUNT PRs from $REPO"
+            echo ""
+          done
+          
+          echo "=========================================="
+          echo "Filtering and Categorizing PRs"
+          echo "=========================================="
+          
+          # Filter out internal and release PRs
+          > normal_prs.txt
+          
+          if [ -s all_repos_prs.txt ]; then
+            while IFS='|' read -r pr_num pr_title pr_url pr_labels pr_merged_at pr_repo || [ -n "$pr_num" ]; do
+              # Skip empty lines
+              [ -z "$pr_num" ] && continue
+              
+              # Skip internal PRs (case-insensitive)
+              if [[ "$pr_title" =~ [Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll] ]]; then
+                echo "⏭️  Skipping internal PR #$pr_num from $pr_repo"
+                continue
+              fi
+              
+              # Skip release PRs (case-insensitive)
+              if [[ "$pr_title" =~ [Rr][Ee][Ll][Ee][Aa][Ss][Ee] ]]; then
+                echo "⏭️  Skipping release PR #$pr_num from $pr_repo"
+                continue
+              fi
+              
+              # Add to normal PRs file with repo info
+              echo "$pr_num|$pr_title|$pr_url|$pr_labels|$pr_merged_at|$pr_repo" >> normal_prs.txt
+              echo "✅ Added PR #$pr_num from $pr_repo: $pr_title"
+            done < all_repos_prs.txt
+          else
+            echo "ℹ️  No PRs found in the specified time range across all repositories"
+          fi
+          
+          # Count total PRs
+          TOTAL_PR_COUNT=$(wc -l < normal_prs.txt | tr -d ' ')
+          echo ""
+          echo "=========================================="
+          echo "✅ Total PRs collected: $TOTAL_PR_COUNT"
+          echo "=========================================="
+          echo ""
+          echo "pr_count=$TOTAL_PR_COUNT" >> $GITHUB_OUTPUT
 
-          # Count PRs
-          PR_COUNT=$(wc -l < nexus_prs.txt | tr -d ' ')
-          echo "Found $PR_COUNT PRs from $PLUGIN_REPO"
-          echo "pr_count=$PR_COUNT" >> $GITHUB_OUTPUT
-
-      - name: Update NEXUS_CHANGELOG.md
+      # ================================================================
+      # STEP 6: Update CHANGELOG.md
+      # ================================================================
+      - name: Update CHANGELOG.md
+        if: steps.validate.outputs.valid == 'true'
         run: |
           CURRENT_VERSION="${{ steps.current.outputs.version }}"
-          CURRENT_PR_URL="${{ steps.current.outputs.url }}"
-          CURRENT_MAJOR_MINOR="${{ steps.current.outputs.major_minor }}"
-          PREVIOUS_VERSION="${{ steps.previous.outputs.previous_version }}"
-          PREVIOUS_MAJOR_MINOR="${{ steps.previous.outputs.previous_major_minor }}"
-
-          # Determine if this is a new version
-          IS_NEW_VERSION="false"
-          if [ -z "$PREVIOUS_MAJOR_MINOR" ]; then
-            IS_NEW_VERSION="true"
-          elif [ "$CURRENT_MAJOR_MINOR" != "$PREVIOUS_MAJOR_MINOR" ]; then
-            IS_NEW_VERSION="true"
+          CURRENT_TAG="${{ steps.current.outputs.tag }}"
+          IS_NEW_VERSION="${{ steps.previous.outputs.is_new_version }}"
+          PREVIOUS_VERSION="${{ steps.previous.outputs.version }}"
+          REPO="${{ github.repository }}"
+          
+          echo "=========================================="
+          echo "Updating CHANGELOG.md"
+          echo "Version: $CURRENT_VERSION"
+          echo "Is New Version: $IS_NEW_VERSION"
+          echo "=========================================="
+          
+          # Create CHANGELOG.md if it doesn't exist
+          if [ ! -f CHANGELOG.md ]; then
+            echo "# Changelog" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "📝 Created new CHANGELOG.md"
           fi
-
-          # Create NEXUS_CHANGELOG.md if it doesn't exist
-          if [ ! -f NEXUS_CHANGELOG.md ]; then
-            echo "# Nexus Changelog" > NEXUS_CHANGELOG.md
-            echo "" >> NEXUS_CHANGELOG.md
-          fi
-
+          
           export CURRENT_VERSION
-          export CURRENT_PR_URL
+          export CURRENT_TAG
           export IS_NEW_VERSION
           export PREVIOUS_VERSION
-
+          export MAIN_REPO
+          
           python3 << 'PYTHON_SCRIPT'
           import re
           import os
-
+          from datetime import datetime
+          from collections import defaultdict
+          
           current_version = os.environ.get('CURRENT_VERSION')
-          current_pr_url = os.environ.get('CURRENT_PR_URL')
-          is_new_version = os.environ.get('IS_NEW_VERSION')
-          previous_version = os.environ.get('PREVIOUS_VERSION')
-
+          current_tag = os.environ.get('CURRENT_TAG')
+          is_new_version = os.environ.get('IS_NEW_VERSION', 'true')
+          previous_version = os.environ.get('PREVIOUS_VERSION', '')
+          main_repo = os.environ.get('MAIN_REPO')
+          
+          # Create tag URL
+          tag_url = f"https://github.com/{main_repo}/releases/tag/{current_tag}"
+          
+          # Label to category mapping
+          CATEGORY_MAP = {
+              'bug-fix': 'Bug Fixes',
+              'bug': 'Bug Fixes',
+              'bugfix': 'Bug Fixes',
+              'fix': 'Bug Fixes',
+              'feature': 'Features',
+              'Feature': 'Features',
+              'features': 'Features',
+              'feat': 'Features',
+              'refactor': 'Refactors',
+              'refactoring': 'Refactors',
+              'enhancement': 'Updates',
+              'enhancements': 'Updates',
+              'documentation': 'Updates',
+              'docs': 'Updates',
+              'chore': 'Updates'
+          }
+          
+          def categorize_pr(labels):
+              """Determine category based on labels"""
+              if not labels:
+                  return 'Updates'
+              
+              labels_lower = [l.lower().strip() for l in labels.split(',') if l]
+              
+              for label in labels_lower:
+                  if label in CATEGORY_MAP:
+                      return CATEGORY_MAP[label]
+              
+              return 'Updates'
+          
+          def format_date(iso_date):
+              """Format ISO date to DD/MM/YY"""
+              if not iso_date:
+                  return ''
+              try:
+                  dt = datetime.fromisoformat(iso_date.replace('Z', '+00:00'))
+                  return dt.strftime('%d/%m/%y')
+              except Exception as e:
+                  print(f"⚠️  Could not parse date '{iso_date}': {e}")
+                  return ''
+          
           # Read the CHANGELOG
-          with open('NEXUS_CHANGELOG.md', 'r') as f:
+          with open('CHANGELOG.md', 'r') as f:
               content = f.read()
-
-          # Read the collected PRs from scapia-nexus
-          pr_entries = []
+          
+          # Read and categorize PRs
+          categorized_prs = defaultdict(list)
           try:
-              with open('nexus_prs.txt', 'r') as f:
+              with open('normal_prs.txt', 'r') as f:
                   for line in f:
                       line = line.strip()
                       if not line:
                           continue
                       parts = line.split('|')
-                      if len(parts) >= 3:
+                      if len(parts) >= 5:
                           pr_num = parts[0]
-                          pr_url = parts[2]
-                          pr_title = '|'.join(parts[1:-1]) if len(parts) > 3 else parts[1]
-                          # Use repo name from environment or default
-                          pr_entries.append(f"- [plugin-testing#{pr_num}]({pr_url}) {pr_title}")
+                          pr_url = parts[-3]
+                          pr_labels = parts[-2]
+                          pr_merged_at = parts[-1]
+                          pr_title = '|'.join(parts[1:-3])
+                          
+                          category = categorize_pr(pr_labels)
+                          date_str = format_date(pr_merged_at)
+                          
+                          if date_str:
+                              entry = f"- {date_str} - [#{pr_num}]({pr_url}) {pr_title}"
+                          else:
+                              entry = f"- [#{pr_num}]({pr_url}) {pr_title}"
+                          
+                          categorized_prs[category].append(entry)
+                          print(f"  ✅ Categorized #{pr_num} as {category}")
           except FileNotFoundError:
-              pass
-
-          # Reverse to show newest first
-          pr_entries.reverse()
-
+              print("  ℹ️  No PRs file found")
+          
+          # Sort categories in desired order
+          category_order = ['Features', 'Bug Fixes', 'Refactors', 'Updates']
+          
+          # Build the PR section
+          pr_section = ""
+          for category in category_order:
+              if category in categorized_prs:
+                  entries = sorted(categorized_prs[category], reverse=True)
+                  pr_section += f"**{category}**\n"
+                  pr_section += "\n".join(entries) + "\n\n"
+          
           # Extract major.minor for the version label
           major_minor = '.'.join(current_version.split('.')[:2])
-
+          
           # Check if this is a new major.minor version
           if is_new_version == 'true':
-              # Create NEW version section
-              new_section = f"### [{current_version}]({current_pr_url}) Version {major_minor} (Nexus)\n"
-              if pr_entries:
-                  new_section += "\n".join(pr_entries) + "\n"
-              else:
-                  new_section += "No PRs found in plugin-testing for this release.\n"
+              print(f"  🆕 Creating NEW version section for {major_minor}")
+              new_section = f"### [{current_version}]({tag_url}) Version {major_minor}\n"
+              if pr_section:
+                  new_section += pr_section
               
-              # Check if we already have content
-              if content.strip() == "# Nexus Changelog":
-                  # First release
-                  content = f"# Nexus Changelog\n\n{new_section}\n"
+              if content.strip() in ["# Changelog", "# CHANGELOG"]:
+                  original_title = content.strip()
+                  content = f"{original_title}\n\n{new_section}\n"
               else:
-                  # Insert after the title
                   content = re.sub(
-                      r'(# Nexus Changelog\s*\n)',
+                      r'(# (?:Changelog|CHANGELOG)\s*\n)',
                       r'\1\n' + new_section + '\n',
                       content,
                       count=1
                   )
           else:
-              # Same major.minor version - REPLACE existing section
-              version_pattern = rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)} \(Nexus\)'
-              
-              # Build the updated section
-              updated_section = f"### [{current_version}]({current_pr_url}) Version {major_minor} (Nexus)\n"
-              if pr_entries:
-                  updated_section += "\n".join(pr_entries) + "\n"
-              else:
-                  updated_section += "No PRs found in plugin-testing for this release.\n"
+              print(f"  📝 Updating EXISTING version section for {major_minor}")
+              version_pattern = rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}'
               
               if re.search(version_pattern, content):
-                  # Replace the existing section completely
+                  section_match = re.search(
+                      rf'(### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}\n)(.*?)(?=\n### |\Z)',
+                      content,
+                      re.DOTALL
+                  )
+                  
+                  existing_section = ""
+                  if section_match and section_match.group(2):
+                      existing_section = section_match.group(2).strip()
+                  
+                  existing_categorized = defaultdict(list)
+                  current_category = None
+                  for line in existing_section.split('\n'):
+                      if line.startswith('**') and line.endswith('**'):
+                          current_category = line.strip('*')
+                      elif line.startswith('- ') and current_category:
+                          existing_categorized[current_category].append(line)
+                  
+                  for category, entries in categorized_prs.items():
+                      existing_categorized[category].extend(entries)
+                  
+                  merged_section = ""
+                  for category in category_order:
+                      if category in existing_categorized:
+                          unique_entries = list(dict.fromkeys(existing_categorized[category]))
+                          sorted_entries = sorted(unique_entries, reverse=True)
+                          merged_section += f"**{category}**\n"
+                          merged_section += "\n".join(sorted_entries) + "\n\n"
+                  
+                  updated_section = f"### [{current_version}]({tag_url}) Version {major_minor}\n{merged_section}"
+                  
                   content = re.sub(
-                      rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)} \(Nexus\)\n(?:(?:- \[.*?\n)|(?:No PRs.*?\n))*',
+                      rf'### \[[^\]]+\]\([^)]+\) Version {re.escape(major_minor)}\n.*?(?=\n### |\Z)',
                       updated_section,
                       content,
-                      count=1
+                      count=1,
+                      flags=re.DOTALL
                   )
               else:
-                  # Version section doesn't exist, create it
+                  print(f"  ⚠️  Version section doesn't exist, creating it")
+                  new_section = f"### [{current_version}]({tag_url}) Version {major_minor}\n"
+                  if pr_section:
+                      new_section += pr_section
+                  
                   content = re.sub(
-                      r'(# Nexus Changelog\s*\n)',
-                      r'\1\n' + updated_section + '\n',
+                      r'(# (?:Changelog|CHANGELOG)\s*\n)',
+                      r'\1\n' + new_section + '\n',
                       content,
                       count=1
                   )
-
-          with open('NEXUS_CHANGELOG.md', 'w') as f:
+          
+          with open('CHANGELOG.md', 'w') as f:
               f.write(content)
-
-          print(f"✓ Added Nexus release {current_version} with {len(pr_entries)} PRs from plugin-testing")
+          
+          total_prs = sum(len(entries) for entries in categorized_prs.values())
+          print(f"\n✅ Successfully added release {current_version} with {total_prs} PRs")
           PYTHON_SCRIPT
+          
+          echo "✅ CHANGELOG.md updated successfully"
 
+      # ================================================================
+      # STEP 7: Commit and push changes
+      # ================================================================
       - name: Commit and push changes
+        if: steps.validate.outputs.valid == 'true'
         run: |
-          git add NEXUS_CHANGELOG.md
-
-          # Check if there are changes to commit
+          echo "=========================================="
+          echo "Committing and pushing changes..."
+          echo "=========================================="
+          
+          git add CHANGELOG.md
+          
           if git diff --staged --quiet; then
-            echo "No changes to commit"
+            echo "ℹ️  No changes to commit"
             exit 0
           fi
+          
+          echo "📝 Changes detected in CHANGELOG.md"
+          git commit -m "chore: update CHANGELOG for release ${{ steps.current.outputs.version }}" \
+                     -m "Co-Authored-By: GitHub Actions <github-actions@github.com>"
+          
+          echo "✅ Changes committed"
+          echo "⬆️  Pushing to master branch..."
+          git push origin master
+          
+          echo "✅ Changes pushed successfully"
 
-          git commit -m "chore: update NEXUS_CHANGELOG for release ${{ steps.current.outputs.version }}" -m "Co-Authored-By: Warp <agent@warp.dev>"
-
-          # Only push if not running in act (local testing)
-          if [ -z "$ACT" ]; then
-            git push origin main
-          else
-            echo "Running in act - skipping push"
-            echo "Changes committed locally:"
-            git log -1 --stat
-          fi
+      # ================================================================
+      # STEP 8: Success Summary
+      # ================================================================
+      - name: Summary
+        if: success()
+        run: |
+          echo ""
+          echo "╔════════════════════════════════════════╗"
+          echo "║   ✅ CHANGELOG UPDATE SUCCESSFUL       ║"
+          echo "╚════════════════════════════════════════╝"
+          echo ""
+          echo "📦 Version: ${{ steps.current.outputs.version }}"
+          echo "🏷️  Tag: ${{ steps.current.outputs.tag }}"
+          echo "📝 PRs Included: ${{ steps.prs.outputs.pr_count }}"
+          echo "📚 CHANGELOG.md has been updated"
+          echo ""
